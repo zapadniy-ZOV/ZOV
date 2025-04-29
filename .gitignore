@@ -1,7 +1,3 @@
-ZOV/target
-ZOV/.env
-ZOV/go-timeseries/user_movement_db/
-*.exe
-*.sum
-*.mod
-ZOV/go-timeseries/usage.md
+/target
+.env
+/.vscode
