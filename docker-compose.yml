@@ -1,0 +1,42 @@
+version: '3'
+services:
+  janusgraph:
+    image: janusgraph/janusgraph:latest
+    container_name: janusgraph
+    ports:
+      - "8182:8182"       # Gremlin Server port
+    depends_on:
+      - cassandra
+      - elasticsearch
+    environment:
+      JANUS_PROPS_TEMPLATE: cql-es
+      janusgraph.storage.backend: cql
+      janusgraph.storage.hostname: cassandra
+      janusgraph.storage.cql.keyspace: janusgraph
+      janusgraph.index.search.backend: elasticsearch
+      janusgraph.index.search.hostname: elasticsearch
+      janusgraph.index.search.elasticsearch.client-only: true
+    restart: always
+
+  cassandra:
+    image: cassandra:4
+    container_name: cassandra
+    ports:
+      - "9042:9042"       # CQL native transport port
+    environment:
+      - CASSANDRA_START_RPC=true
+      - HEAP_NEWSIZE=128M
+      - MAX_HEAP_SIZE=1024M
+    restart: always
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.10
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"       # REST API
+      - "9300:9300"       # Inter-node communication
+    restart: always 
