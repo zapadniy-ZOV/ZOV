@@ -326,7 +326,7 @@ public class MissileSupplyGraphService {
             }
             
             Edge route = edges.get(0);
-            route.property("isActive", isActive);
+            g.E(route.id()).property("isActive", isActive).iterate();
             
             Map<String, Object> routeMap = new HashMap<>();
             routeMap.put("sourceDepotId", sourceDepotId);
