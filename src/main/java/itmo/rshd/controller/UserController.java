@@ -120,22 +120,20 @@ public class UserController {
     @PutMapping("/{id}/social-rating")
     public ResponseEntity<User> updateSocialRating(
             @PathVariable String id,
-            @RequestParam double rating,
+            @RequestParam("rating") double ratingValue,
             @RequestParam(required = false) String raterId) {
 
-        User updatedUser = userService.updateSocialRating(id, rating);
+        User processedUser;
 
-        // If this rating was given by another user, update their rating too
         if (raterId != null && !raterId.isEmpty()) {
-            userService.updateRaterSocialRating(raterId, id, rating > 0 ? 1.0 : -1.0);
+            processedUser = userService.updateTargetSocialRating(raterId, id, ratingValue);
+        } else {
+            processedUser = userService.updateSocialRating(id, ratingValue);
         }
 
-        if (updatedUser != null) {
-            // Notify via WebSocket about user rating change
-            webSocketService.notifyUserLocationUpdate(updatedUser);
-            webSocketService.notifySocialRatingChange(id, updatedUser);
-
-            return new ResponseEntity<>(updatedUser, HttpStatus.OK);
+        if (processedUser != null) {
+            webSocketService.notifySocialRatingChange(id, processedUser);
+            return new ResponseEntity<>(processedUser, HttpStatus.OK);
         } else {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         }

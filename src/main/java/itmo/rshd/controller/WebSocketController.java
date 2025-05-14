@@ -102,33 +102,4 @@ public class WebSocketController {
             }
         }
     }
-    
-    /**
-     * Handle rating updates
-     */
-    @MessageMapping("/rate-person")
-    public void handleRating(@Payload RatingUpdate ratingUpdate) {
-        String userId = ratingUpdate.getUserId();           // Who is rating
-        String targetUserId = ratingUpdate.getTargetUserId(); // Who is being rated
-        double ratingChange = ratingUpdate.getRatingChange();  // The rating change
-        
-        // Update the target user's social rating
-        User updatedTargetUser = userService.updateSocialRating(targetUserId, 
-            ratingChange);
-        
-        // Update the rater's social rating based on their action
-        User updatedRaterUser = userService.updateRaterSocialRating(userId, 
-            targetUserId, ratingChange);
-        
-        // Notify all users about both updates
-        if (updatedTargetUser != null) {
-            webSocketService.notifyUserLocationUpdate(updatedTargetUser);
-            webSocketService.notifySocialRatingChange(targetUserId, updatedTargetUser);
-        }
-        
-        if (updatedRaterUser != null) {
-            webSocketService.notifyUserLocationUpdate(updatedRaterUser);
-            webSocketService.notifySocialRatingChange(userId, updatedRaterUser);
-        }
-    }
 } 
