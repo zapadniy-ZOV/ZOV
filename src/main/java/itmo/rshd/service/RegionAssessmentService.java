@@ -3,6 +3,11 @@ package itmo.rshd.service;
 import java.util.List;
 import java.util.Optional;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -64,6 +69,27 @@ public class RegionAssessmentService {
         return averageRating < 30 && importantPersons.isEmpty();
     }
 
+    // Helper method to recursively update statistics of children regions (bottom-up)
+    private void recursivelyUpdateStatsOfChildren(Region parentRegion) {
+        if (parentRegion == null || parentRegion.getType() == Region.RegionType.DISTRICT) {
+            // Districts are leaves in the region hierarchy for statistics calculation purposes here
+            return;
+        }
+        List<Region> children = regionRepository.findByParentRegionId(parentRegion.getId());
+        if (children != null) {
+            for (Region child : children) {
+                recursivelyUpdateStatsOfChildren(child); // Go to deepest children first
+                System.out.println("Updating stats for child region: " + child.getName() + " (ID: " + child.getId() + ") before parent " + parentRegion.getName());
+                Region updatedChild = regionService.updateRegionStatistics(child.getId());
+                if (updatedChild != null) {
+                    webSocketService.notifyRegionStatusUpdate(updatedChild);
+                } else {
+                     System.err.println("Failed to update stats for child region: " + child.getId() + " during recursive update of children for " + parentRegion.getId());
+                }
+            }
+        }
+    }
+
     public boolean deployOreshnik(String regionId) {
         Optional<Region> regionOpt = regionRepository.findById(regionId);
         if (!regionOpt.isPresent()) {
@@ -75,24 +101,31 @@ public class RegionAssessmentService {
         if (shouldDeployOreshnik(regionId)) {
             System.out.println("ORESHNIK deployment authorized for region: " + region.getName() + " (ID: " + regionId + ")");
 
-            eliminateUsersInRegion(regionId); // This now updates embedded users and saves the region.
-            Region updatedRegionAfterElimination = regionService.updateRegionStatistics(regionId);
+            eliminateUsersInRegion(regionId); // This now updates users in DB AND embedded lists in ALL affected regions.
+            
+            System.out.println("Starting recursive stats update for children of target region: " + region.getName());
+            recursivelyUpdateStatsOfChildren(region);
+            System.out.println("Finished recursive stats update for children of target region: " + region.getName());
 
-            if (updatedRegionAfterElimination != null) {
-                System.out.println("Region " + updatedRegionAfterElimination.getName() +
-                                   " statistics updated after Oreshnik. Population: " + updatedRegionAfterElimination.getPopulationCount() +
-                                   ", AvgRating: " + updatedRegionAfterElimination.getAverageSocialRating());
-                webSocketService.notifyRegionStatusUpdate(updatedRegionAfterElimination);
+            // Now update the target region itself, it will use the freshly updated stats of its children
+            Region updatedRegionAfterEliminationAndChildUpdates = regionService.updateRegionStatistics(regionId);
 
-                String parentId = updatedRegionAfterElimination.getParentRegionId();
+            if (updatedRegionAfterEliminationAndChildUpdates != null) {
+                System.out.println("Region " + updatedRegionAfterEliminationAndChildUpdates.getName() +
+                                   " statistics updated after Oreshnik and child updates. Population: " + updatedRegionAfterEliminationAndChildUpdates.getPopulationCount() +
+                                   ", AvgRating: " + updatedRegionAfterEliminationAndChildUpdates.getAverageSocialRating());
+                webSocketService.notifyRegionStatusUpdate(updatedRegionAfterEliminationAndChildUpdates);
+
+                String parentId = updatedRegionAfterEliminationAndChildUpdates.getParentRegionId();
                 if (parentId != null && !parentId.isEmpty() && !parentId.equals("none")) {
-                    System.out.println("Triggering statistics update for parent region: " + parentId);
-                    updateParentStatsRecursively(parentId); // New recursive helper using RegionService
+                    System.out.println("Triggering statistics update for parent region hierarchy: " + parentId);
+                    // This existing method handles recursive updates *upwards* from the target region's parent
+                    updateParentStatsRecursively(parentId); 
                 }
                 return true;
             } else {
-                System.err.println("CRITICAL: Failed to update statistics for region: " + regionId + " after elimination.");
-                return false; // Critical failure if stats can't be updated post-elimination.
+                System.err.println("CRITICAL: Failed to update statistics for target region: " + regionId + " after elimination and child updates.");
+                return false; 
             }
         } else {
             System.out.println("ORESHNIK deployment not authorized for region: " + region.getName() + " (ID: " + regionId + ")");
@@ -100,107 +133,123 @@ public class RegionAssessmentService {
         }
     }
     
-    // New recursive helper to update parent stats using RegionService.updateRegionStatistics
+    // This method updates parent stats recursively upwards.
     private void updateParentStatsRecursively(String regionIdToUpdate) {
         if (regionIdToUpdate == null || regionIdToUpdate.isEmpty() || regionIdToUpdate.equals("none")) {
             return;
         }
-        System.out.println("Recursively updating stats for: " + regionIdToUpdate);
+        System.out.println("Recursively updating stats for ancestor: " + regionIdToUpdate);
         Region updatedRegion = regionService.updateRegionStatistics(regionIdToUpdate);
         if (updatedRegion != null) {
-            webSocketService.notifyRegionStatusUpdate(updatedRegion); // Notify update for this parent
-            // Continue up the hierarchy
+            webSocketService.notifyRegionStatusUpdate(updatedRegion); 
             String parentId = updatedRegion.getParentRegionId();
-            updateParentStatsRecursively(parentId); // Recursive call
+            updateParentStatsRecursively(parentId); 
         } else {
-            System.err.println("Failed to update stats for parent region: " + regionIdToUpdate + " during recursive update.");
+            System.err.println("Failed to update stats for parent region: " + regionIdToUpdate + " during recursive ancestor update.");
         }
     }
 
-    // New helper method to recursively collect users
-    private void collectUsersForElimination(Region currentRegion, java.util.Set<User> usersToCollect) {
+    // New helper method to recursively collect users and involved regions
+    private void collectUsersAndRegionsRecursively(Region currentRegion, Set<User> usersToCollect, Map<String, Region> regionsInvolved) {
         if (currentRegion == null) {
             return;
         }
+        // Add current region to the map of involved regions
+        regionsInvolved.put(currentRegion.getId(), currentRegion);
 
         // Add users directly associated with the currentRegion
         if (currentRegion.getUsers() != null) {
             usersToCollect.addAll(currentRegion.getUsers());
         }
 
-        // If the current region is not a district (i.e., it can have sub-regions),
-        // recursively collect users from its sub-regions.
+        // If the current region is not a district, recursively collect from sub-regions.
         if (currentRegion.getType() != Region.RegionType.DISTRICT) {
             List<Region> subRegions = regionRepository.findByParentRegionId(currentRegion.getId());
             if (subRegions != null) {
                 for (Region subRegion : subRegions) {
-                    collectUsersForElimination(subRegion, usersToCollect);
+                    // Pass the original maps/sets to accumulate
+                    collectUsersAndRegionsRecursively(subRegion, usersToCollect, regionsInvolved);
                 }
             }
         }
     }
 
     /**
-     * "Eliminates" users in a region after a missile strike.
-     * Users are collected from the target region and its sub-regions by traversing the hierarchy
-     * and using the embedded user lists within each region object.
-     * Eliminated users have their social rating set to 0 and marked inactive.
-     * The UserRepository is updated, and the target region's embedded user list is updated.
+     * "Eliminates" users in a target region and its sub-regions.
+     * 1. Collects all users from the target region and its descendants.
+     * 2. Collects all Region objects involved.
+     * 3. Marks collected users as inactive (social rating 0) and saves them to UserRepository.
+     * 4. For each involved Region object, updates its embedded 'users' list with the modified User instances and saves the Region.
      */
-    private void eliminateUsersInRegion(String regionId) {
-        Region region = regionRepository.findById(regionId).orElse(null);
-        if (region == null) {
-            System.out.println("Warning: Region not found for elimination: " + regionId);
+    private void eliminateUsersInRegion(String targetRegionId) {
+        Region targetRegion = regionRepository.findById(targetRegionId).orElse(null);
+        if (targetRegion == null) {
+            System.out.println("Warning: Target region not found for elimination: " + targetRegionId);
             return;
         }
 
-        java.util.Set<User> uniqueUsersToEliminate = new java.util.LinkedHashSet<>();
-        collectUsersForElimination(region, uniqueUsersToEliminate);
+        Set<User> uniqueUsersToEliminate = new LinkedHashSet<>();
+        Map<String, Region> involvedRegionsMap = new HashMap<>();
+        
+        // Populate usersToEliminate and involvedRegionsMap
+        collectUsersAndRegionsRecursively(targetRegion, uniqueUsersToEliminate, involvedRegionsMap);
+        
         List<User> usersToEliminateList = new ArrayList<>(uniqueUsersToEliminate);
 
-        System.out.println("Total " + usersToEliminateList.size() + " users found to eliminate in " + region.getType() + " " + region.getName());
+        System.out.println("Found " + usersToEliminateList.size() + " unique users across " + involvedRegionsMap.size() + " regions (target and sub-regions) for elimination based on target: " + targetRegion.getName());
 
-        List<User> savedEliminatedUsers = new ArrayList<>();
+        List<User> savedBatchOfEliminatedUsers = new ArrayList<>();
         if (!usersToEliminateList.isEmpty()) {
             for (User user : usersToEliminateList) {
                 user.setSocialRating(0);
                 user.setActive(false);
-                savedEliminatedUsers.add(userRepository.save(user));
+                // Collect for batch save or save individually - assuming save returns the managed entity
+                savedBatchOfEliminatedUsers.add(userRepository.save(user)); 
             }
-            System.out.println("Completed repository update for " + savedEliminatedUsers.size() + " users in " + region.getType() + " " + region.getName());
+            System.out.println("Completed UserRepository update for " + savedBatchOfEliminatedUsers.size() + " users.");
         } else {
-            System.out.println("No users to eliminate in " + region.getType() + " " + region.getName());
+            System.out.println("No users found to eliminate for target region: " + targetRegion.getName());
+            // Still proceed to update regions in case their lists need cleaning, though unlikely if no users.
         }
+        
+        // Create a map of the final state of eliminated users by their ID for easy lookup
+        Map<String, User> finalStateUserMap = savedBatchOfEliminatedUsers.stream()
+                                                .filter(u -> u.getId() != null)
+                                                .collect(Collectors.toMap(User::getId, u -> u));
 
-        // Update the embedded users list in the TARGET Region object
-        // This ensures its direct list is consistent with eliminated users it contained.
-        if (region != null && !savedEliminatedUsers.isEmpty()) {
-            System.out.println("Updating embedded users list in region: " + region.getName());
-            List<User> currentDirectUsersInTargetRegion = region.getUsers();
-            if (currentDirectUsersInTargetRegion == null) {
-                currentDirectUsersInTargetRegion = new ArrayList<>();
+        // Update embedded user lists in ALL involved regions
+        System.out.println("Updating embedded user lists for all " + involvedRegionsMap.size() + " involved regions...");
+        for (Region affectedRegion : involvedRegionsMap.values()) {
+            List<User> currentEmbeddedUsers = affectedRegion.getUsers(); // Get original list
+            List<User> newEmbeddedUserList = new ArrayList<>();
+
+            if (currentEmbeddedUsers != null) {
+                for (User embeddedUser : currentEmbeddedUsers) {
+                    if (embeddedUser.getId() != null && finalStateUserMap.containsKey(embeddedUser.getId())) {
+                        // If this user was in the elimination batch, add its updated state
+                        newEmbeddedUserList.add(finalStateUserMap.get(embeddedUser.getId()));
+                    } else {
+                        newEmbeddedUserList.add(embeddedUser);
+                    }
+                }
             }
-
-            java.util.Map<String, User> finalStateUserMap = new java.util.HashMap<>();
-            for (User seu : savedEliminatedUsers) {
-                if (seu.getId() != null) { // Ensure ID is not null before putting in map
-                    finalStateUserMap.put(seu.getId(), seu);
+            List<User> correctlyUpdatedEmbeddedList = new ArrayList<>();
+            if (currentEmbeddedUsers != null) {
+                for (User originalEmbeddedUser : currentEmbeddedUsers) {
+                    User updatedVersion = finalStateUserMap.get(originalEmbeddedUser.getId());
+                    if (updatedVersion != null) {
+                        correctlyUpdatedEmbeddedList.add(updatedVersion); // Add the updated user from saved batch
+                    } else {
+                        correctlyUpdatedEmbeddedList.add(originalEmbeddedUser);
+                    }
                 }
             }
 
-            List<User> newDirectUserListForTargetRegion = new ArrayList<>();
-            for (User directUser : currentDirectUsersInTargetRegion) {
-                if (directUser.getId() != null && finalStateUserMap.containsKey(directUser.getId())) {
-                    newDirectUserListForTargetRegion.add(finalStateUserMap.get(directUser.getId()));
-                } else {
-                    newDirectUserListForTargetRegion.add(directUser); // Keep non-eliminated or ID-less user
-                }
-            }
-            region.setUsers(newDirectUserListForTargetRegion);
-            regionRepository.save(region);
-            System.out.println("Region " + region.getName() + " saved with updated embedded user list.");
-        } else if (region != null && usersToEliminateList.isEmpty()) {
-             System.out.println("No users were eliminated, embedded list in " + region.getName() + " remains as is.");
+
+            affectedRegion.setUsers(correctlyUpdatedEmbeddedList); // Use the more robustly built list
+            regionRepository.save(affectedRegion);
+            System.out.println("Saved region " + affectedRegion.getName() + " (ID: " + affectedRegion.getId() + ") with updated embedded user list (" + correctlyUpdatedEmbeddedList.size() + " users).");
         }
+        System.out.println("Finished updating embedded user lists for all involved regions.");
     }
 }
