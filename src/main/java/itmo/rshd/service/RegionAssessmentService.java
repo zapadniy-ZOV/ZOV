@@ -117,8 +117,35 @@ public class RegionAssessmentService {
         }
     }
 
+    // New helper method to recursively collect users
+    private void collectUsersForElimination(Region currentRegion, java.util.Set<User> usersToCollect) {
+        if (currentRegion == null) {
+            return;
+        }
+
+        // Add users directly associated with the currentRegion
+        if (currentRegion.getUsers() != null) {
+            usersToCollect.addAll(currentRegion.getUsers());
+        }
+
+        // If the current region is not a district (i.e., it can have sub-regions),
+        // recursively collect users from its sub-regions.
+        if (currentRegion.getType() != Region.RegionType.DISTRICT) {
+            List<Region> subRegions = regionRepository.findByParentRegionId(currentRegion.getId());
+            if (subRegions != null) {
+                for (Region subRegion : subRegions) {
+                    collectUsersForElimination(subRegion, usersToCollect);
+                }
+            }
+        }
+    }
+
     /**
-     * "Eliminates" users in a region after a missile strike
+     * "Eliminates" users in a region after a missile strike.
+     * Users are collected from the target region and its sub-regions by traversing the hierarchy
+     * and using the embedded user lists within each region object.
+     * Eliminated users have their social rating set to 0 and marked inactive.
+     * The UserRepository is updated, and the target region's embedded user list is updated.
      */
     private void eliminateUsersInRegion(String regionId) {
         Region region = regionRepository.findById(regionId).orElse(null);
@@ -126,56 +153,16 @@ public class RegionAssessmentService {
             System.out.println("Warning: Region not found for elimination: " + regionId);
             return;
         }
-        
-        List<User> usersToEliminate = new ArrayList<>();
-        
-        if (region.getType() == Region.RegionType.DISTRICT) {
-            usersToEliminate = userRepository.findByDistrictId(regionId);
-            System.out.println("Found " + usersToEliminate.size() + " users in DISTRICT " + region.getName() + " to eliminate");
-        } 
-        else if (region.getType() == Region.RegionType.CITY) {
-            List<Region> districts = regionRepository.findByParentRegionId(regionId);
-            System.out.println("Processing CITY " + region.getName() + " with " + districts.size() + " districts");
-            
-            for (Region district : districts) {
-                List<User> districtUsers = userRepository.findByDistrictId(district.getId());
-                usersToEliminate.addAll(districtUsers);
-                System.out.println("Found " + districtUsers.size() + " users in district " + district.getName());
-            }
-            
-            List<User> cityUsers = userRepository.findByRegionId(regionId);
-            usersToEliminate.addAll(cityUsers);
-            System.out.println("Found " + cityUsers.size() + " users directly in city");
-        }
-        else if (region.getType() == Region.RegionType.REGION) {
-            List<Region> cities = regionRepository.findByParentRegionId(regionId);
-            System.out.println("Processing REGION " + region.getName() + " with " + cities.size() + " cities");
-            
-            for (Region city : cities) {
-                List<Region> districts = regionRepository.findByParentRegionId(city.getId());
-                
-                for (Region district : districts) {
-                    List<User> districtUsers = userRepository.findByDistrictId(district.getId());
-                    usersToEliminate.addAll(districtUsers);
-                }
-                
-                List<User> cityUsers = userRepository.findByRegionId(city.getId());
-                usersToEliminate.addAll(cityUsers);
-            }
-            
-            List<User> regionUsers = userRepository.findByRegionId(regionId);
-            usersToEliminate.addAll(regionUsers);
-        }
-        else if (region.getType() == Region.RegionType.COUNTRY) {
-            usersToEliminate = userRepository.findAll();
-            System.out.println("WARNING: Eliminating all users in the country!");
-        }
-        
-        System.out.println("Total " + usersToEliminate.size() + " users found to eliminate in " + region.getType() + " " + region.getName());
-        
+
+        java.util.Set<User> uniqueUsersToEliminate = new java.util.LinkedHashSet<>();
+        collectUsersForElimination(region, uniqueUsersToEliminate);
+        List<User> usersToEliminateList = new ArrayList<>(uniqueUsersToEliminate);
+
+        System.out.println("Total " + usersToEliminateList.size() + " users found to eliminate in " + region.getType() + " " + region.getName());
+
         List<User> savedEliminatedUsers = new ArrayList<>();
-        if (!usersToEliminate.isEmpty()) {
-            for (User user : usersToEliminate) {
+        if (!usersToEliminateList.isEmpty()) {
+            for (User user : usersToEliminateList) {
                 user.setSocialRating(0);
                 user.setActive(false);
                 savedEliminatedUsers.add(userRepository.save(user));
@@ -184,32 +171,35 @@ public class RegionAssessmentService {
         } else {
             System.out.println("No users to eliminate in " + region.getType() + " " + region.getName());
         }
-        
-        // Update the embedded users list in the Region object
+
+        // Update the embedded users list in the TARGET Region object
+        // This ensures its direct list is consistent with eliminated users it contained.
         if (region != null && !savedEliminatedUsers.isEmpty()) {
             System.out.println("Updating embedded users list in region: " + region.getName());
-            List<User> currentEmbeddedUsers = region.getUsers();
-            if (currentEmbeddedUsers == null) {
-                currentEmbeddedUsers = new ArrayList<>();
+            List<User> currentDirectUsersInTargetRegion = region.getUsers();
+            if (currentDirectUsersInTargetRegion == null) {
+                currentDirectUsersInTargetRegion = new ArrayList<>();
             }
-            List<User> newEmbeddedUserList = new ArrayList<>();
-            for (User embeddedUser : currentEmbeddedUsers) {
-                boolean foundInEliminated = false;
-                for (User savedEliminatedUser : savedEliminatedUsers) {
-                    if (embeddedUser.getId().equals(savedEliminatedUser.getId())) {
-                        newEmbeddedUserList.add(savedEliminatedUser);
-                        foundInEliminated = true;
-                        break;
-                    }
-                }
-                if (!foundInEliminated) {
-                    newEmbeddedUserList.add(embeddedUser); // Keep user if not in the elimination list
+
+            java.util.Map<String, User> finalStateUserMap = new java.util.HashMap<>();
+            for (User seu : savedEliminatedUsers) {
+                if (seu.getId() != null) { // Ensure ID is not null before putting in map
+                    finalStateUserMap.put(seu.getId(), seu);
                 }
             }
-            region.setUsers(newEmbeddedUserList);
-            regionRepository.save(region); // Save the region with the updated embedded user list
+
+            List<User> newDirectUserListForTargetRegion = new ArrayList<>();
+            for (User directUser : currentDirectUsersInTargetRegion) {
+                if (directUser.getId() != null && finalStateUserMap.containsKey(directUser.getId())) {
+                    newDirectUserListForTargetRegion.add(finalStateUserMap.get(directUser.getId()));
+                } else {
+                    newDirectUserListForTargetRegion.add(directUser); // Keep non-eliminated or ID-less user
+                }
+            }
+            region.setUsers(newDirectUserListForTargetRegion);
+            regionRepository.save(region);
             System.out.println("Region " + region.getName() + " saved with updated embedded user list.");
-        } else if (region != null && usersToEliminate.isEmpty()) {
+        } else if (region != null && usersToEliminateList.isEmpty()) {
              System.out.println("No users were eliminated, embedded list in " + region.getName() + " remains as is.");
         }
     }
