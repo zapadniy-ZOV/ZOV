@@ -7,6 +7,7 @@ import itmo.rshd.model.User;
 import itmo.rshd.repository.RegionRepository;
 import itmo.rshd.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -21,7 +22,7 @@ public class RegionService {
 
     @Autowired
     public RegionService(RegionRepository regionRepository, UserRepository userRepository,
-            RegionAssessmentService regionAssessmentService) {
+            @Lazy RegionAssessmentService regionAssessmentService) {
         this.regionRepository = regionRepository;
         this.userRepository = userRepository;
         this.regionAssessmentService = regionAssessmentService;
@@ -67,127 +68,48 @@ public class RegionService {
         Optional<Region> regionOpt = regionRepository.findById(regionId);
         if (regionOpt.isPresent()) {
             Region region = regionOpt.get();
+            List<User> directUsers = region.getUsers(); // Get embedded users
 
-            // Initialize counters
-            int activePopulation = 0;
-            double totalRating = 0;
-            int importantCount = 0;
+            int populationFromDirectUsers = 0;
+            double ratingSumFromDirectUsers = 0;
+            int importantFromDirectUsers = 0;
 
-            if (region.getType() == Region.RegionType.COUNTRY) {
-                // For country, we need to count all active users
-                List<User> allActiveUsers = userRepository.findByActive(true);
-                activePopulation = allActiveUsers.size();
-
-                if (activePopulation > 0) {
-                    for (User user : allActiveUsers) {
-                        totalRating += user.getSocialRating();
-                        if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                                user.getStatus() == User.SocialStatus.VIP) {
-                            importantCount++;
-                        }
-                    }
-                }
-            } else if (region.getType() == Region.RegionType.REGION) {
-                // For region, count all users in the region directly plus users in all cities
-                // and districts
-                List<User> directUsers = userRepository.findByRegionId(regionId);
-                activePopulation = directUsers.size();
-
-                // Add ratings and important counts for direct users
+            if (directUsers != null) {
                 for (User user : directUsers) {
-                    totalRating += user.getSocialRating();
-                    if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                            user.getStatus() == User.SocialStatus.VIP) {
-                        importantCount++;
-                    }
-                }
-
-                // Count users in cities within this region
-                List<Region> citiesInRegion = regionRepository.findByParentRegionId(regionId);
-                for (Region city : citiesInRegion) {
-                    // Find all districts in this city
-                    List<Region> districtsInCity = regionRepository.findByParentRegionId(city.getId());
-
-                    // Count users in the city directly
-                    List<User> cityUsers = userRepository.findByRegionId(city.getId());
-                    activePopulation += cityUsers.size();
-
-                    for (User user : cityUsers) {
-                        totalRating += user.getSocialRating();
-                        if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                                user.getStatus() == User.SocialStatus.VIP) {
-                            importantCount++;
+                    if (user.isActive()) {
+                        populationFromDirectUsers++;
+                        ratingSumFromDirectUsers += user.getSocialRating();
+                        if (user.getStatus() == User.SocialStatus.IMPORTANT || user.getStatus() == User.SocialStatus.VIP) {
+                            importantFromDirectUsers++;
                         }
-                    }
-
-                    // Count users in all districts of this city
-                    for (Region district : districtsInCity) {
-                        List<User> districtUsers = userRepository.findByDistrictId(district.getId());
-                        activePopulation += districtUsers.size();
-
-                        for (User user : districtUsers) {
-                            totalRating += user.getSocialRating();
-                            if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                                    user.getStatus() == User.SocialStatus.VIP) {
-                                importantCount++;
-                            }
-                        }
-                    }
-                }
-            } else if (region.getType() == Region.RegionType.CITY) {
-                // For cities, we need to count both officials directly associated with the city
-                // AND users in all districts belonging to the city
-
-                // Find all districts in this city
-                List<Region> districtsInCity = regionRepository.findByParentRegionId(region.getId());
-                List<String> districtIds = districtsInCity.stream()
-                        .map(Region::getId)
-                        .collect(java.util.stream.Collectors.toList());
-
-                // Get all users in the city including those in its districts
-                List<User> allCityUsers = userRepository.findByCityIdIncludingDistricts(
-                        region.getId(), districtIds);
-
-                activePopulation = allCityUsers.size();
-
-                // Calculate ratings and count important persons
-                if (activePopulation > 0) {
-                    totalRating = allCityUsers.stream()
-                            .mapToDouble(User::getSocialRating)
-                            .sum();
-
-                    importantCount = (int) allCityUsers.stream()
-                            .filter(u -> u.getStatus() == User.SocialStatus.IMPORTANT ||
-                                    u.getStatus() == User.SocialStatus.VIP)
-                            .count();
-                }
-            } else if (region.getType() == Region.RegionType.DISTRICT) {
-                // For districts, just count direct users
-                List<User> districtUsers = userRepository.findByDistrictId(regionId);
-                activePopulation = districtUsers.size();
-
-                for (User user : districtUsers) {
-                    totalRating += user.getSocialRating();
-                    if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                            user.getStatus() == User.SocialStatus.VIP) {
-                        importantCount++;
                     }
                 }
             }
 
-            // Update region statistics
-            region.setPopulationCount(activePopulation);
+            int totalPopulation = populationFromDirectUsers;
+            double totalWeightedRatingSum = ratingSumFromDirectUsers;
+            int totalImportantPersons = importantFromDirectUsers;
 
-            if (activePopulation > 0) {
-                region.setAverageSocialRating(totalRating / activePopulation);
-                region.setImportantPersonsCount(importantCount);
+            if (region.getType() != Region.RegionType.DISTRICT) {
+                List<Region> subRegions = regionRepository.findByParentRegionId(region.getId());
+                for (Region subRegion : subRegions) {
+                    totalPopulation += subRegion.getPopulationCount();
+                    totalWeightedRatingSum += subRegion.getAverageSocialRating() * subRegion.getPopulationCount();
+                    totalImportantPersons += subRegion.getImportantPersonsCount();
+                }
+            }
 
-                // Only check for threat if it's not a country
+            region.setPopulationCount(totalPopulation);
+
+            if (totalPopulation > 0) {
+                region.setAverageSocialRating(totalWeightedRatingSum / totalPopulation);
+                region.setImportantPersonsCount(totalImportantPersons);
+
                 if (region.getType() != Region.RegionType.COUNTRY) {
                     boolean underThreat = regionAssessmentService.shouldDeployOreshnik(region.getId());
                     region.setUnderThreat(underThreat);
                 } else {
-                    region.setUnderThreat(false); // Country is never under direct threat
+                    region.setUnderThreat(false);
                 }
             } else {
                 region.setAverageSocialRating(0);

@@ -24,6 +24,9 @@ public class RegionAssessmentService {
     @Autowired
     private WebSocketService webSocketService;
 
+    @Autowired
+    private RegionService regionService;
+
     public boolean shouldDeployOreshnik(String regionId) {
         // Get the region by ID
         Region region = regionRepository.findById(regionId).orElse(null);
@@ -62,46 +65,58 @@ public class RegionAssessmentService {
     }
 
     public boolean deployOreshnik(String regionId) {
-        if (shouldDeployOreshnik(regionId)) {
-            // Implementation of missile deployment logic
-            System.out.println("ORESHNIK deployed to region: " + regionId);
-
-            try {
-                Region region = regionRepository.findById(regionId).orElse(null);
-                if (region != null) {
-                    // "Eliminate" users in the region and update statistics
-                    eliminateUsersInRegion(regionId);
-                    
-                    // Update the region to reflect elimination
-                    region.setPopulationCount(0);
-                    region.setAverageSocialRating(0);
-                    region.setImportantPersonsCount(0);
-                    region.setUnderThreat(false); // No longer under threat since everyone is eliminated
-                    
-                    // Save region changes
-                    regionRepository.save(region);
-                    
-                    // Notify clients about the eliminated region
-                    webSocketService.notifyRegionStatusUpdate(region);
-                    System.out.println("Region " + region.getName() + " marked as eliminated, population: " + region.getPopulationCount());
-                    
-                    // Recursively update parent regions
-                    if (region.getParentRegionId() != null && !region.getParentRegionId().isEmpty()) {
-                        System.out.println("Updating parent region: " + region.getParentRegionId());
-                        updateParentRegionStatistics(region.getParentRegionId());
-                    }
-                    
-                    return true;
-                }
-            } catch (Exception ex) {
-                System.err.println("Error updating region after missile deployment: " + ex.getMessage());
-                ex.printStackTrace();
-                return false;
-            }
+        Optional<Region> regionOpt = regionRepository.findById(regionId);
+        if (!regionOpt.isPresent()) {
+            System.err.println("ORESHNIK DEPLOYMENT FAILED: Region not found: " + regionId);
+            return false;
         }
-        return false;
+        Region region = regionOpt.get();
+
+        if (shouldDeployOreshnik(regionId)) {
+            System.out.println("ORESHNIK deployment authorized for region: " + region.getName() + " (ID: " + regionId + ")");
+
+            eliminateUsersInRegion(regionId); // This now updates embedded users and saves the region.
+            Region updatedRegionAfterElimination = regionService.updateRegionStatistics(regionId);
+
+            if (updatedRegionAfterElimination != null) {
+                System.out.println("Region " + updatedRegionAfterElimination.getName() +
+                                   " statistics updated after Oreshnik. Population: " + updatedRegionAfterElimination.getPopulationCount() +
+                                   ", AvgRating: " + updatedRegionAfterElimination.getAverageSocialRating());
+                webSocketService.notifyRegionStatusUpdate(updatedRegionAfterElimination);
+
+                String parentId = updatedRegionAfterElimination.getParentRegionId();
+                if (parentId != null && !parentId.isEmpty() && !parentId.equals("none")) {
+                    System.out.println("Triggering statistics update for parent region: " + parentId);
+                    updateParentStatsRecursively(parentId); // New recursive helper using RegionService
+                }
+                return true;
+            } else {
+                System.err.println("CRITICAL: Failed to update statistics for region: " + regionId + " after elimination.");
+                return false; // Critical failure if stats can't be updated post-elimination.
+            }
+        } else {
+            System.out.println("ORESHNIK deployment not authorized for region: " + region.getName() + " (ID: " + regionId + ")");
+            return false;
+        }
     }
     
+    // New recursive helper to update parent stats using RegionService.updateRegionStatistics
+    private void updateParentStatsRecursively(String regionIdToUpdate) {
+        if (regionIdToUpdate == null || regionIdToUpdate.isEmpty() || regionIdToUpdate.equals("none")) {
+            return;
+        }
+        System.out.println("Recursively updating stats for: " + regionIdToUpdate);
+        Region updatedRegion = regionService.updateRegionStatistics(regionIdToUpdate);
+        if (updatedRegion != null) {
+            webSocketService.notifyRegionStatusUpdate(updatedRegion); // Notify update for this parent
+            // Continue up the hierarchy
+            String parentId = updatedRegion.getParentRegionId();
+            updateParentStatsRecursively(parentId); // Recursive call
+        } else {
+            System.err.println("Failed to update stats for parent region: " + regionIdToUpdate + " during recursive update.");
+        }
+    }
+
     /**
      * "Eliminates" users in a region after a missile strike
      */
@@ -114,182 +129,88 @@ public class RegionAssessmentService {
         
         List<User> usersToEliminate = new ArrayList<>();
         
-        // Different approach based on region type
         if (region.getType() == Region.RegionType.DISTRICT) {
-            // For districts, find users directly in the district
             usersToEliminate = userRepository.findByDistrictId(regionId);
             System.out.println("Found " + usersToEliminate.size() + " users in DISTRICT " + region.getName() + " to eliminate");
         } 
         else if (region.getType() == Region.RegionType.CITY) {
-            // For cities, find all districts in the city
             List<Region> districts = regionRepository.findByParentRegionId(regionId);
             System.out.println("Processing CITY " + region.getName() + " with " + districts.size() + " districts");
             
-            // Find users in all districts of this city
             for (Region district : districts) {
                 List<User> districtUsers = userRepository.findByDistrictId(district.getId());
                 usersToEliminate.addAll(districtUsers);
                 System.out.println("Found " + districtUsers.size() + " users in district " + district.getName());
             }
             
-            // Also add users directly associated with the city (officials, etc.)
             List<User> cityUsers = userRepository.findByRegionId(regionId);
             usersToEliminate.addAll(cityUsers);
             System.out.println("Found " + cityUsers.size() + " users directly in city");
         }
         else if (region.getType() == Region.RegionType.REGION) {
-            // For federal regions, find all cities in the region
             List<Region> cities = regionRepository.findByParentRegionId(regionId);
             System.out.println("Processing REGION " + region.getName() + " with " + cities.size() + " cities");
             
-            // For each city, find its districts and users
             for (Region city : cities) {
                 List<Region> districts = regionRepository.findByParentRegionId(city.getId());
                 
-                // Add users from each district
                 for (Region district : districts) {
                     List<User> districtUsers = userRepository.findByDistrictId(district.getId());
                     usersToEliminate.addAll(districtUsers);
                 }
                 
-                // Add users directly associated with the city
                 List<User> cityUsers = userRepository.findByRegionId(city.getId());
                 usersToEliminate.addAll(cityUsers);
             }
             
-            // Also add users directly associated with the region
             List<User> regionUsers = userRepository.findByRegionId(regionId);
             usersToEliminate.addAll(regionUsers);
         }
         else if (region.getType() == Region.RegionType.COUNTRY) {
-            // For country, this is catastrophic - eliminate all users
             usersToEliminate = userRepository.findAll();
             System.out.println("WARNING: Eliminating all users in the country!");
         }
         
         System.out.println("Total " + usersToEliminate.size() + " users found to eliminate in " + region.getType() + " " + region.getName());
         
-        // Mark users as eliminated
-        int eliminatedCount = 0;
-        for (User user : usersToEliminate) {
-            user.setSocialRating(0);
-            user.setActive(false); // Mark users as eliminated
-            userRepository.save(user);
-            eliminatedCount++;
-            
-            if (eliminatedCount % 100 == 0) {
-                System.out.println("Eliminated " + eliminatedCount + " users so far...");
+        List<User> savedEliminatedUsers = new ArrayList<>();
+        if (!usersToEliminate.isEmpty()) {
+            for (User user : usersToEliminate) {
+                user.setSocialRating(0);
+                user.setActive(false);
+                savedEliminatedUsers.add(userRepository.save(user));
             }
-        }
-        
-        System.out.println("Completed elimination of " + eliminatedCount + " users in " + region.getType() + " " + region.getName());
-    }
-    
-    /**
-     * Recursively updates parent region statistics after a missile strike
-     */
-    private void updateParentRegionStatistics(String parentRegionId) {
-        if (parentRegionId == null || parentRegionId.isEmpty()) {
-            return; // No parent to update
-        }
-        
-        Optional<Region> parentOpt = regionRepository.findById(parentRegionId);
-        if (parentOpt.isPresent()) {
-            Region parent = parentOpt.get();
-            System.out.println("Updating parent region: " + parent.getName());
-            
-            // Initialize counters
-            int totalPopulation = 0;
-            double totalRatingSum = 0;
-            int totalImportantPersons = 0;
-            
-            // Different counting strategy based on region type
-            if (parent.getType() == Region.RegionType.COUNTRY) {
-                // For country, count all active users
-                List<User> allUsers = userRepository.findByActive(true);
-                totalPopulation = allUsers.size();
-                totalRatingSum = allUsers.stream()
-                    .mapToDouble(User::getSocialRating)
-                    .sum();
-                totalImportantPersons = (int) allUsers.stream()
-                    .filter(u -> u.getStatus() == User.SocialStatus.IMPORTANT || u.getStatus() == User.SocialStatus.VIP)
-                    .count();
-            } 
-            else if (parent.getType() == Region.RegionType.REGION) {
-                // For regions, count users in this region and all its cities and districts
-                List<User> regionUsers = userRepository.findByRegionId(parentRegionId);
-                totalPopulation = regionUsers.size();
-                totalRatingSum = regionUsers.stream()
-                    .mapToDouble(User::getSocialRating)
-                    .sum();
-                totalImportantPersons = (int) regionUsers.stream()
-                    .filter(u -> u.getStatus() == User.SocialStatus.IMPORTANT || u.getStatus() == User.SocialStatus.VIP)
-                    .count();
-            }
-            else if (parent.getType() == Region.RegionType.CITY) {
-                // For cities, count users in this city and all its districts
-                List<User> cityUsers = userRepository.findByRegionId(parentRegionId);
-                totalPopulation = cityUsers.size();
-                totalRatingSum = cityUsers.stream()
-                    .mapToDouble(User::getSocialRating)
-                    .sum();
-                totalImportantPersons = (int) cityUsers.stream()
-                    .filter(u -> u.getStatus() == User.SocialStatus.IMPORTANT || u.getStatus() == User.SocialStatus.VIP)
-                    .count();
-            }
-            else if (parent.getType() == Region.RegionType.DISTRICT) {
-                // For districts, just count direct users
-                List<User> districtUsers = userRepository.findByDistrictId(parentRegionId);
-                totalPopulation = districtUsers.size();
-                totalRatingSum = districtUsers.stream()
-                    .mapToDouble(User::getSocialRating)
-                    .sum();
-                totalImportantPersons = (int) districtUsers.stream()
-                    .filter(u -> u.getStatus() == User.SocialStatus.IMPORTANT || u.getStatus() == User.SocialStatus.VIP)
-                    .count();
-            }
-            
-            // Update parent region statistics
-            System.out.println("Before update - Region: " + parent.getName() + 
-                              ", Population: " + parent.getPopulationCount() + 
-                              ", Rating: " + parent.getAverageSocialRating() + 
-                              ", Important: " + parent.getImportantPersonsCount());
-            
-            parent.setPopulationCount(totalPopulation);
-            
-            if (totalPopulation > 0) {
-                parent.setAverageSocialRating(totalRatingSum / totalPopulation);
-            } else {
-                parent.setAverageSocialRating(0);
-            }
-            
-            parent.setImportantPersonsCount(totalImportantPersons);
-            
-            // Re-evaluate if the parent should be under threat only if it still has population
-            if (totalPopulation > 0) {
-                boolean underThreat = shouldDeployOreshnik(parent.getId());
-                parent.setUnderThreat(underThreat);
-            } else {
-                parent.setUnderThreat(false);
-            }
-            
-            System.out.println("After update - Region: " + parent.getName() + 
-                              ", Population: " + parent.getPopulationCount() + 
-                              ", Rating: " + parent.getAverageSocialRating() + 
-                              ", Important: " + parent.getImportantPersonsCount());
-            
-            // Save updated parent
-            regionRepository.save(parent);
-            
-            // Notify clients about the region update
-            webSocketService.notifyRegionStatusUpdate(parent);
-            
-            // Continue up the hierarchy
-            if (parent.getParentRegionId() != null && !parent.getParentRegionId().isEmpty()) {
-                updateParentRegionStatistics(parent.getParentRegionId());
-            }
+            System.out.println("Completed repository update for " + savedEliminatedUsers.size() + " users in " + region.getType() + " " + region.getName());
         } else {
-            System.out.println("Warning: Parent region not found: " + parentRegionId);
+            System.out.println("No users to eliminate in " + region.getType() + " " + region.getName());
+        }
+        
+        // Update the embedded users list in the Region object
+        if (region != null && !savedEliminatedUsers.isEmpty()) {
+            System.out.println("Updating embedded users list in region: " + region.getName());
+            List<User> currentEmbeddedUsers = region.getUsers();
+            if (currentEmbeddedUsers == null) {
+                currentEmbeddedUsers = new ArrayList<>();
+            }
+            List<User> newEmbeddedUserList = new ArrayList<>();
+            for (User embeddedUser : currentEmbeddedUsers) {
+                boolean foundInEliminated = false;
+                for (User savedEliminatedUser : savedEliminatedUsers) {
+                    if (embeddedUser.getId().equals(savedEliminatedUser.getId())) {
+                        newEmbeddedUserList.add(savedEliminatedUser);
+                        foundInEliminated = true;
+                        break;
+                    }
+                }
+                if (!foundInEliminated) {
+                    newEmbeddedUserList.add(embeddedUser); // Keep user if not in the elimination list
+                }
+            }
+            region.setUsers(newEmbeddedUserList);
+            regionRepository.save(region); // Save the region with the updated embedded user list
+            System.out.println("Region " + region.getName() + " saved with updated embedded user list.");
+        } else if (region != null && usersToEliminate.isEmpty()) {
+             System.out.println("No users were eliminated, embedded list in " + region.getName() + " remains as is.");
         }
     }
 }

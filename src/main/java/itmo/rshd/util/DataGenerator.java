@@ -277,183 +277,144 @@ public class DataGenerator implements CommandLineRunner {
     }
 
     private void createUsers(List<Region> districts, List<Region> cities, List<Region> federalRegions, Region country) {
-        List<User> users = new ArrayList<>();
+        List<User> usersToPersistInRepo = new ArrayList<>();
+        Map<String, Region> regionMapForEmbedding = new HashMap<>();
+
+        // Populate map for easy lookup of region objects to embed users into
+        districts.forEach(d -> regionMapForEmbedding.put(d.getId(), d));
+        cities.forEach(c -> regionMapForEmbedding.put(c.getId(), c));
+        federalRegions.forEach(fr -> regionMapForEmbedding.put(fr.getId(), fr));
+        regionMapForEmbedding.put(country.getId(), country);
 
         // Create country president
         User president = createSpecialUser(country, null, null, User.SocialStatus.VIP, 95, 100);
-        users.add(president);
+        usersToPersistInRepo.add(president);
 
         // Create federal region heads
         for (Region federalRegion : federalRegions) {
             User regionalHead = createSpecialUser(country, federalRegion, null, User.SocialStatus.VIP, 85, 95);
-            users.add(regionalHead);
+            usersToPersistInRepo.add(regionalHead);
         }
 
         // Create city mayors
         for (Region city : cities) {
-            // Find parent region
-            String regionId = city.getParentRegionId();
-            User mayor = createSpecialUser(country,
-                    findRegionById(federalRegions, regionId),
-                    city,
-                    User.SocialStatus.IMPORTANT, 75, 85);
-            users.add(mayor);
+            String parentFederalRegionId = city.getParentRegionId(); 
+            Region parentFederalRegion = federalRegions.stream().filter(fr -> fr.getId().equals(parentFederalRegionId)).findFirst().orElse(null);
+            User mayor = createSpecialUser(country, parentFederalRegion, city, User.SocialStatus.IMPORTANT, 75, 85);
+            usersToPersistInRepo.add(mayor);
         }
 
-        // Create regular users and distribute across districts
-        for (int i = users.size(); i < USERS_COUNT; i++) {
-            // Select random district
+        // Create regular users
+        int existingSpecialUsersCount = usersToPersistInRepo.size();
+        for (int i = 0; i < USERS_COUNT - existingSpecialUsersCount; i++) {
             Region district = districts.get(ThreadLocalRandom.current().nextInt(districts.size()));
-
-            // Find parent city and region
             Region city = findRegionById(cities, district.getParentRegionId());
             Region federalRegion = findRegionById(federalRegions, city.getParentRegionId());
 
-            // Determine status and social rating based on district rating
             User.SocialStatus status;
             double minRating, maxRating;
-
-            // Distribute social statuses based on district's social rating
             double districtRating = district.getAverageSocialRating();
             double random = ThreadLocalRandom.current().nextDouble();
 
             if (districtRating < 39) {
-                // Low-rated district: 60% LOW, 40% REGULAR, 0% IMPORTANT, 0% VIP
-                if (random < 0.6) {
-                    status = User.SocialStatus.LOW;
-                } else {
-                    status = User.SocialStatus.REGULAR;
-                }
+                if (random < 0.6) { status = User.SocialStatus.LOW; } else { status = User.SocialStatus.REGULAR; }
             } else if (districtRating < 70) {
-                // Mid-rated district: 20% LOW, 75% REGULAR, 5% IMPORTANT, 0% VIP
-                if (random < 0.2) {
-                    status = User.SocialStatus.LOW;
-                } else if (random < 0.95) {
-                    status = User.SocialStatus.REGULAR;
-                } else {
-                    status = User.SocialStatus.IMPORTANT;
-                }
+                if (random < 0.2) { status = User.SocialStatus.LOW; } else if (random < 0.95) { status = User.SocialStatus.REGULAR; } else { status = User.SocialStatus.IMPORTANT; }
             } else {
-                // High-rated district: 5% LOW, 80% REGULAR, 14% IMPORTANT, 1% VIP
-                if (random < 0.05) {
-                    status = User.SocialStatus.LOW;
-                } else if (random < 0.85) {
-                    status = User.SocialStatus.REGULAR;
-                } else if (random < 0.99) {
-                    status = User.SocialStatus.IMPORTANT;
-                } else {
-                    status = User.SocialStatus.VIP;
-                }
+                if (random < 0.05) { status = User.SocialStatus.LOW; } else if (random < 0.85) { status = User.SocialStatus.REGULAR; } else if (random < 0.99) { status = User.SocialStatus.IMPORTANT; } else { status = User.SocialStatus.VIP; }
             }
-
-            // Define rating range based on status
             switch (status) {
-                case LOW:
-                    minRating = 10;
-                    maxRating = 39;
-                    break;
-                case REGULAR:
-                    minRating = 40;
-                    maxRating = 69;
-                    break;
-                case IMPORTANT:
-                    minRating = 70;
-                    maxRating = 89;
-                    break;
-                case VIP:
-                    minRating = 90;
-                    maxRating = 100;
-                    break;
-                default:
-                    minRating = 40;
-                    maxRating = 69;
+                case LOW: minRating = 10; maxRating = 39; break;
+                case REGULAR: minRating = 40; maxRating = 69; break;
+                case IMPORTANT: minRating = 70; maxRating = 89; break;
+                case VIP: minRating = 90; maxRating = 100; break;
+                default: minRating = 40; maxRating = 69;
             }
 
-            // Create the user
             User user = createUser(country, federalRegion, city, district, status, minRating, maxRating);
-            users.add(user);
+            usersToPersistInRepo.add(user);
 
-            // Save in batches to avoid memory issues
-            if (users.size() % 100 == 0) {
-                userRepository.saveAll(users);
-                users.clear();
-                System.out.println("Generated " + i + " users so far...");
+            if ((i + 1) % 1000 == 0) {
+                System.out.println("Prepared " + (usersToPersistInRepo.size()) + " users for persistence so far...");
             }
         }
 
-        // Save any remaining users
-        if (!users.isEmpty()) {
-            userRepository.saveAll(users);
+        System.out.println("Saving all " + usersToPersistInRepo.size() + " users to UserRepository...");
+        List<User> savedUsersWithIds = userRepository.saveAll(usersToPersistInRepo);
+        System.out.println("All users saved to UserRepository and have IDs.");
+
+        System.out.println("Adding saved users to their respective region's embedded lists...");
+        for (User savedUser : savedUsersWithIds) {
+            Region targetEmbeddingRegion = null;
+            // Determine the most specific region for embedding this user
+            if (savedUser.getDistrictId() != null && !savedUser.getDistrictId().equals("none")) {
+                targetEmbeddingRegion = regionMapForEmbedding.get(savedUser.getDistrictId());
+            } else if (savedUser.getRegionId() != null && !savedUser.getRegionId().equals("none")) {
+                // This could be a city mayor (regionId is cityId) or a federal head (regionId is federalRegionId)
+                targetEmbeddingRegion = regionMapForEmbedding.get(savedUser.getRegionId());
+            } else {
+                // This should be the President, associated directly with the country
+                targetEmbeddingRegion = regionMapForEmbedding.get(savedUser.getCountryId());
+            }
+
+            if (targetEmbeddingRegion != null) {
+                if (targetEmbeddingRegion.getUsers() == null) { targetEmbeddingRegion.setUsers(new ArrayList<>()); }
+                targetEmbeddingRegion.getUsers().add(savedUser);
+            } else {
+                System.out.println("Warning: Could not determine target region for embedding user: " + savedUser.getUsername() + " with districtId: " + savedUser.getDistrictId() + " regionId: " + savedUser.getRegionId());
+            }
         }
+        System.out.println("Users added to embedded lists. Saving all regions...");
+
+        // Save all regions that could have users embedded
+        regionRepository.save(country); 
+        regionRepository.saveAll(federalRegions);
+        regionRepository.saveAll(cities);
+        regionRepository.saveAll(districts);
+        System.out.println("All regions potentially containing embedded users have been saved.");
     }
 
     private User createSpecialUser(Region country, Region federalRegion, Region city,
             User.SocialStatus status, double minRating, double maxRating) {
         User user = new User();
-        // Generate unique username with timestamp and random number
         String uniqueUsername = faker.name().firstName().toLowerCase() +
                 "." + faker.name().lastName().toLowerCase() +
                 "_" + System.currentTimeMillis() % 100000 +
                 faker.random().nextInt(1000, 9999);
         user.setUsername(uniqueUsername);
         user.setPassword(faker.internet().password(8, 12));
-
-        // Special users have "important" titles in their names
         String title = "";
-        if (federalRegion == null) {
-            title = "President ";
-        } else if (city == null) {
-            title = "Governor ";
-        } else {
-            title = "Mayor ";
-        }
-
+        if (federalRegion == null && city == null) { title = "President ";}
+        else if (city == null) { title = "Governor ";}
+        else { title = "Mayor ";}
         user.setFullName(title + faker.name().fullName());
         user.setSocialRating(ThreadLocalRandom.current().nextDouble(minRating, maxRating));
         user.setStatus(status);
         user.setActive(true);
         user.setLastLocationUpdateTimestamp(System.currentTimeMillis());
 
-        // Set country
         user.setCountryId(country.getId());
-
-        // Set region if provided
-        if (federalRegion != null) {
-            user.setRegionId(federalRegion.getId());
-        } else {
-            // Randomly select a region for the president
-            user.setRegionId("none"); // Special case for president
-        }
-
-        // Set city if provided
-        if (city != null) {
-            // For city officials, set the regionId to the cityId to properly associate them
-            user.setRegionId(city.getId());
-            user.setDistrictId("none"); // City official
-
-            // Location in the city center
+        if (city != null) { // Mayor: cityId is their primary region association for this context
+            user.setRegionId(city.getId()); 
+            user.setDistrictId("none");
             GeoLocation cityCenter = getCenterPoint(city.getBoundaries());
             user.setCurrentLocation(cityCenter);
-        } else if (federalRegion != null) {
-            user.setDistrictId("none"); // Regional official
-
-            // Location in the region center
+        } else if (federalRegion != null) { // Governor: federalRegionId is their primary region
+            user.setRegionId(federalRegion.getId());
+            user.setDistrictId("none"); 
             GeoLocation regionCenter = getCenterPoint(federalRegion.getBoundaries());
             user.setCurrentLocation(regionCenter);
-        } else {
-            user.setDistrictId("none"); // National official
-
-            // Capital location
+        } else { // President: countryId is primary, regionId/districtId can be "none"
+            user.setRegionId("none"); 
+            user.setDistrictId("none"); 
             user.setCurrentLocation(createValidGeoLocation(RUSSIA_CENTER_LAT, RUSSIA_CENTER_LON));
         }
-
-        return user;
+        return user; // Not saved here
     }
 
     private User createUser(Region country, Region federalRegion, Region city, Region district,
             User.SocialStatus status, double minRating, double maxRating) {
         User user = new User();
-        // Generate unique username with timestamp and random number
         String uniqueUsername = faker.name().firstName().toLowerCase() +
                 "." + faker.name().lastName().toLowerCase() +
                 "_" + System.currentTimeMillis() % 100000 +
@@ -466,16 +427,13 @@ public class DataGenerator implements CommandLineRunner {
         user.setActive(true);
         user.setLastLocationUpdateTimestamp(System.currentTimeMillis());
 
-        // Set geographical IDs
         user.setCountryId(country.getId());
-        user.setRegionId(federalRegion.getId());
-        user.setDistrictId(district.getId());
-
-        // Random location within district boundaries
+        user.setRegionId(federalRegion.getId()); // This is the parent federal region
+        user.setDistrictId(district.getId()); // This is the actual district the user resides in
+        
         GeoLocation location = getRandomPointInBoundaries(district.getBoundaries());
         user.setCurrentLocation(location);
-
-        return user;
+        return user; // Not saved here
     }
 
     private void updateRegionStatistics(List<Region> districts, List<Region> cities,
@@ -510,38 +468,41 @@ public class DataGenerator implements CommandLineRunner {
     }
 
     private void updateDistrictStatistics(Region district) {
-        List<User> usersInDistrict = userRepository.findByDistrictId(district.getId());
+        List<User> usersInDistrict = district.getUsers(); // Use embedded users list
 
-        // No users in this district
-        if (usersInDistrict.isEmpty()) {
+        if (usersInDistrict == null || usersInDistrict.isEmpty()) { 
             district.setPopulationCount(0);
             district.setImportantPersonsCount(0);
-            district.setAverageSocialRating(50); // Default rating
+            district.setAverageSocialRating(50); 
+            district.setUnderThreat(false); 
             return;
         }
 
-        // Set population count
-        district.setPopulationCount(usersInDistrict.size());
-
-        // Calculate average social rating
-        double totalRating = 0;
-        int importantCount = 0;
+        int activePopulationCount = 0;
+        double totalRatingOfActive = 0;
+        int importantActiveCount = 0;
 
         for (User user : usersInDistrict) {
-            totalRating += user.getSocialRating();
-
-            if (user.getStatus() == User.SocialStatus.IMPORTANT ||
-                    user.getStatus() == User.SocialStatus.VIP) {
-                importantCount++;
+            if (user.isActive()) { // <<< Added check for active users
+                activePopulationCount++;
+                totalRatingOfActive += user.getSocialRating(); 
+                if (user.getStatus() == User.SocialStatus.IMPORTANT || user.getStatus() == User.SocialStatus.VIP) { 
+                    importantActiveCount++;
+                }
             }
         }
 
-        district.setAverageSocialRating(totalRating / usersInDistrict.size());
-        district.setImportantPersonsCount(importantCount);
-
-        // Update threat status based on social rating and important persons
-        boolean isUnderThreat = district.getAverageSocialRating() < 40 && importantCount == 0;
-        district.setUnderThreat(isUnderThreat);
+        district.setPopulationCount(activePopulationCount);
+        if (activePopulationCount > 0) {
+            district.setAverageSocialRating(totalRatingOfActive / activePopulationCount);
+            district.setImportantPersonsCount(importantActiveCount);
+            boolean isUnderThreat = (totalRatingOfActive / activePopulationCount) < 40 && importantActiveCount == 0;
+            district.setUnderThreat(isUnderThreat);
+        } else {
+            district.setAverageSocialRating(50); // Default if no active users
+            district.setImportantPersonsCount(0);
+            district.setUnderThreat(false);
+        }
     }
 
     private void updateHigherRegionStatistics(Region region, List<Region> subRegions) {

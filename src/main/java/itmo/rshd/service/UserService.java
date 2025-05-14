@@ -8,6 +8,7 @@ import itmo.rshd.model.Region;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -24,7 +25,15 @@ public class UserService {
     }
 
     public User createUser(User user) {
-        return userRepository.save(user);
+        User savedUser = userRepository.save(user);
+
+        if (savedUser.getDistrictId() != null && !savedUser.getDistrictId().equals("none")) {
+            regionService.getRegionById(savedUser.getDistrictId()).ifPresent(region -> {
+                region.getUsers().add(savedUser);
+                regionService.updateRegion(region);
+            });
+        }
+        return savedUser;
     }
 
     public List<User> getAllUsers() {
@@ -44,19 +53,59 @@ public class UserService {
     }
 
     public void deleteUser(String id) {
-        userRepository.deleteById(id);
+        Optional<User> userOpt = userRepository.findById(id);
+        if (userOpt.isPresent()) {
+            User userToDelete = userOpt.get();
+            String districtId = userToDelete.getDistrictId();
+
+            userRepository.deleteById(id);
+
+            if (districtId != null && !districtId.equals("none")) {
+                regionService.getRegionById(districtId).ifPresent(oldRegion -> {
+                    boolean removed = oldRegion.getUsers().removeIf(u -> u.getId().equals(id));
+                    if (removed) {
+                        regionService.updateRegion(oldRegion);
+                        regionService.updateRegionStatistics(districtId);
+                    }
+                });
+            }
+        }
     }
 
     public User updateUserLocation(String userId, GeoLocation location, String regionId, String districtId, String countryId) {
         Optional<User> userOpt = userRepository.findById(userId);
         if (userOpt.isPresent()) {
             User user = userOpt.get();
+            String oldDistrictId = user.getDistrictId();
+
             user.setCurrentLocation(location);
             user.setRegionId(regionId);
             user.setDistrictId(districtId);
             user.setCountryId(countryId);
             user.setLastLocationUpdateTimestamp(System.currentTimeMillis());
-            return userRepository.save(user);
+            User updatedUser = userRepository.save(user);
+
+            if (oldDistrictId != null && !oldDistrictId.equals("none") && !oldDistrictId.equals(updatedUser.getDistrictId())) {
+                regionService.getRegionById(oldDistrictId).ifPresent(oldRegion -> {
+                    boolean removed = oldRegion.getUsers().removeIf(u -> u.getId().equals(userId));
+                    if (removed) {
+                        regionService.updateRegion(oldRegion);
+                        regionService.updateRegionStatistics(oldDistrictId);
+                    }
+                });
+            }
+
+            if (updatedUser.getDistrictId() != null && !updatedUser.getDistrictId().equals("none")) {
+                final String newEffectiveDistrictId = updatedUser.getDistrictId();
+                regionService.getRegionById(newEffectiveDistrictId).ifPresent(newRegion -> {
+                    newRegion.getUsers().removeIf(u -> u.getId().equals(userId));
+                    newRegion.getUsers().add(updatedUser);
+                    regionService.updateRegion(newRegion);
+                });
+            }
+            
+            updateUserRelatedRegionStatistics(updatedUser);
+            return updatedUser;
         }
         return null;
     }
@@ -80,20 +129,38 @@ public class UserService {
             
             User updatedUser = userRepository.save(user);
             
-            // Update region statistics for all affected regions
-            updateUserRelatedRegionStatistics(user);
+            // Update user in the region's embedded list
+            if (updatedUser.getDistrictId() != null && !updatedUser.getDistrictId().equals("none")) {
+                String districtId = updatedUser.getDistrictId();
+                regionService.getRegionById(districtId).ifPresent(region -> {
+                    region.getUsers().removeIf(u -> u.getId().equals(userId));
+                    region.getUsers().add(updatedUser);
+                    regionService.updateRegion(region);
+                });
+            }
             
+            updateUserRelatedRegionStatistics(updatedUser);
             return updatedUser;
         }
         return null;
     }
 
     public List<User> findUsersInRegion(String regionId) {
-        return userRepository.findByRegionId(regionId);
+        Optional<Region> regionOpt = regionService.getRegionById(regionId);
+        return regionOpt.map(Region::getUsers).orElseGet(Collections::emptyList);
     }
 
     public List<User> findImportantPersonsInRegion(String regionId) {
-        return userRepository.findImportantPersonsInRegion(regionId);
+        Optional<Region> regionOpt = regionService.getRegionById(regionId);
+        if (regionOpt.isPresent()) {
+            Region region = regionOpt.get();
+            if (region.getUsers() != null) {
+                return region.getUsers().stream()
+                        .filter(user -> user.getStatus() == SocialStatus.IMPORTANT || user.getStatus() == SocialStatus.VIP)
+                        .collect(java.util.stream.Collectors.toList());
+            }
+        }
+        return Collections.emptyList();
     }
 
     public List<User> findUsersNearLocation(GeoLocation location, double maxDistanceKm) {
@@ -126,67 +193,61 @@ public class UserService {
         if (raterOpt.isPresent() && targetOpt.isPresent()) {
             User rater = raterOpt.get();
             User target = targetOpt.get();
-            double raterImpact = 0;
-            
-            // If rater is VIP or IMPORTANT, they have special rating power
+
+            // If rater is VIP or IMPORTANT, they affect the target's rating
             if (rater.getStatus() == SocialStatus.VIP || rater.getStatus() == SocialStatus.IMPORTANT) {
                 double multiplier = rater.getStatus() == SocialStatus.VIP ? 2.0 : 1.5;
-                double baseImpact = ratingChange > 0 ? 0.5 : -0.5;
+                double baseImpact = ratingChange > 0 ? 0.5 : -0.5; // Base impact for like/dislike
                 double impact = baseImpact * multiplier;
                 
-                // Calculate new rating by applying the impact
-                double newRating = target.getSocialRating() + impact;
+                double newTargetRating = target.getSocialRating() + impact;
+                newTargetRating = Math.max(0, Math.min(100, newTargetRating)); // Clamp to 0-100
                 
-                // Ensure rating stays within valid bounds (0-100)
-                newRating = Math.max(0, Math.min(100, newRating));
-                
-                target.setSocialRating(newRating);
-                // Update target's status based on new rating
-                updateUserStatusBasedOnRating(target);
+                target.setSocialRating(newTargetRating);
+                updateUserStatusBasedOnRating(target); // Update target's status
                 User updatedTarget = userRepository.save(target);
                 
-                // Update region statistics for the target's regions
-                updateUserRelatedRegionStatistics(target);
+                // Update updatedTarget in its region's embedded list
+                if (updatedTarget.getDistrictId() != null && !updatedTarget.getDistrictId().equals("none")) {
+                    String districtId = updatedTarget.getDistrictId();
+                    regionService.getRegionById(districtId).ifPresent(region -> {
+                        region.getUsers().removeIf(u -> u.getId().equals(targetId));
+                        region.getUsers().add(updatedTarget);
+                        regionService.updateRegion(region);
+                    });
+                }
+                updateUserRelatedRegionStatistics(updatedTarget);
+                return rater; // VIP/IMPORTANT Rater's rating doesn't change from this action, return original rater.
+            } else {
+                // Rater is Regular or Low, their own rating changes based on target's status
+                double raterImpact = 0;
+                switch (target.getStatus()) {
+                    case VIP: raterImpact = ratingChange > 0 ? 5.0 : -10.0; break;
+                    case IMPORTANT: raterImpact = ratingChange > 0 ? 3.0 : -7.0; break;
+                    case REGULAR: raterImpact = ratingChange > 0 ? 1.0 : -3.0; break;
+                    case LOW: raterImpact = ratingChange > 0 ? 0.5 : -1.0; break;
+                }
                 
-                return updatedTarget;
+                double newRaterRating = rater.getSocialRating() + raterImpact;
+                newRaterRating = Math.max(0, Math.min(100, newRaterRating)); // Clamp to 0-100
+                
+                rater.setSocialRating(newRaterRating);
+                updateUserStatusBasedOnRating(rater); // Update rater's status
+                User updatedRater = userRepository.save(rater);
+                
+                // Update updatedRater in its region's embedded list
+                if (updatedRater.getDistrictId() != null && !updatedRater.getDistrictId().equals("none")) {
+                    String districtId = updatedRater.getDistrictId();
+                    regionService.getRegionById(districtId).ifPresent(region -> {
+                        region.getUsers().removeIf(u -> u.getId().equals(raterId));
+                        region.getUsers().add(updatedRater);
+                        regionService.updateRegion(region);
+                    });
+                }
+                updateUserRelatedRegionStatistics(updatedRater);
+                return updatedRater; // Return the updated rater
             }
-            
-            // For regular and low status users, use the original impact calculation
-            switch (target.getStatus()) {
-                case VIP:
-                    raterImpact = ratingChange > 0 ? 5.0 : -10.0;
-                    break;
-                case IMPORTANT:
-                    raterImpact = ratingChange > 0 ? 3.0 : -7.0;
-                    break;
-                case REGULAR:
-                    raterImpact = ratingChange > 0 ? 1.0 : -3.0;
-                    break;
-                case LOW:
-                    raterImpact = ratingChange > 0 ? 0.5 : -1.0;
-                    break;
-            }
-            
-            // Calculate new rating by adding the impact to current rating
-            double newRating = rater.getSocialRating() + raterImpact;
-            
-            // Ensure rating stays within valid bounds (0-100)
-            newRating = Math.max(0, Math.min(100, newRating));
-            
-            // Update rater's social rating
-            rater.setSocialRating(newRating);
-            
-            // Update status based on new rating
-            updateUserStatusBasedOnRating(rater);
-            
-            User updatedRater = userRepository.save(rater);
-            
-            // Update region statistics for the rater's regions
-            updateUserRelatedRegionStatistics(rater);
-            
-            return updatedRater;
         }
-        
         return null;
     }
 
