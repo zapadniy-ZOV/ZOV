@@ -17,11 +17,11 @@ public class ScheduledTasks {
     }
     @Scheduled(cron = "0 1/2 * * * ?")
     public void scheduleS3UploadTask() {
-        backupService.createAndUploadBackup();
+        backupService.createAndUploadBackup(); 
     }
 
     @Scheduled(cron = "0 */2 * * * ?")
     public void scheduleMongoDumpTask() {
-        mongoDumpService.performMongoDump();
+        mongoDumpService.performFullLocalBackupPreparation();
     }
 } 

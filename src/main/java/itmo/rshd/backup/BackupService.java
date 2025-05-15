@@ -5,71 +5,77 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 @Service
+@Slf4j
 public class BackupService {
-
-    private static final Logger log = LoggerFactory.getLogger(BackupService.class);
 
     @Value("${backup.bucket.name}")
     private String bucketName;
 
-    private static final String DB_NAME = "ZOV";
-    private static final String BACKUP_PARENT_DIR = "./backup";
-    private static final Path temporaryArchiveParentDir = Paths.get("."); // Store .zip in project root temporarily
+    private static final String BACKUP_ROOT_DIR_PATH_STR = "./backup";
+    // Define the subdirectories we expect to manage within ./backup
+    private static final List<String> MANAGED_BACKUP_SUBDIRS = Arrays.asList("ZOV", "user_movement_db", "frostdb_data");
+    private static final Path TEMPORARY_ARCHIVE_PARENT_DIR = Paths.get("."); // Store .zip in project root temporarily
 
     public void createAndUploadBackup() {
-        Path dbSpecificBackupPath = Paths.get(BACKUP_PARENT_DIR, DB_NAME); // e.g., ./backup/ZOV
+        Path backupRootDir = Paths.get(BACKUP_ROOT_DIR_PATH_STR);
 
-        log.info("Attempting to backup and upload data from: {}", dbSpecificBackupPath);
+        log.info("Attempting to backup and upload data from: {}", backupRootDir);
 
-        if (!Files.exists(dbSpecificBackupPath) || !Files.isDirectory(dbSpecificBackupPath)) {
-            log.warn("Backup source directory {} does not exist or is not a directory. Skipping S3 upload.", dbSpecificBackupPath);
+        if (!Files.exists(backupRootDir) || !Files.isDirectory(backupRootDir)) {
+            log.warn("Backup root directory {} does not exist or is not a directory. Skipping S3 upload.", backupRootDir);
             return;
         }
 
         try {
-            if (isDirEmpty(dbSpecificBackupPath)) {
-                log.warn("Backup source directory {} is empty. Skipping S3 upload.", dbSpecificBackupPath);
+            if (isDirectoryEffectivelyEmptyForBackup(backupRootDir)) {
+                log.warn("Backup root directory {} is effectively empty (no managed subdirectories found or they are all empty). Skipping S3 upload.", backupRootDir);
                 return;
             }
         } catch (IOException e) {
-            log.error("Failed to check if directory {} is empty. Skipping S3 upload.", dbSpecificBackupPath, e);
+            log.error("Failed to check if directory {} is effectively empty. Skipping S3 upload.", backupRootDir, e);
             return;
         }
 
         String currentDateTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-        String archiveName = "DB_" + DB_NAME + "_" + currentDateTime + ".zip"; // e.g., DB_ZOV_20231027_103000.zip
-        Path archivePath = temporaryArchiveParentDir.resolve(archiveName); // e.g., ./DB_ZOV_....zip
+        String archiveName = "BACKUP_COMPOSITE_" + currentDateTime + ".zip";
+        Path archivePath = TEMPORARY_ARCHIVE_PARENT_DIR.resolve(archiveName);
 
         try {
-            log.info("Creating archive {} from {}", archivePath, dbSpecificBackupPath);
-            zipDirectory(dbSpecificBackupPath, archivePath);
-            log.info("Successfully created backup archive: {}", archivePath);
+            log.info("Creating archive {} from all contents of {}", archivePath, backupRootDir);
+            zipDirectory(backupRootDir, archivePath);
+            log.info("Successfully created composite backup archive: {}", archivePath);
 
             log.info("Uploading archive {} to S3 bucket {}", archiveName, bucketName);
             uploadToS3(archivePath.toString(), bucketName, archiveName);
-            log.info("Successfully uploaded backup archive {} to S3 bucket {}", archiveName, bucketName);
+            log.info("Successfully uploaded composite backup archive {} to S3 bucket {}", archiveName, bucketName);
 
             // Cleanup after successful upload
             Files.deleteIfExists(archivePath);
             log.info("Successfully deleted local temporary archive: {}", archivePath);
 
-            log.info("Deleting original backup data directory after successful upload: {}", dbSpecificBackupPath);
-            deleteDirectoryRecursively(dbSpecificBackupPath); // Key step: delete ./backup/ZOV
+            log.info("Deleting managed subdirectories from {} after successful upload.", backupRootDir);
+            for (String subdirName : MANAGED_BACKUP_SUBDIRS) {
+                deleteDirectoryRecursively(backupRootDir.resolve(subdirName));
+            }
 
         } catch (IOException | InterruptedException e) {
-            log.error("Error during backup and S3 upload process for {}. Error: {}", dbSpecificBackupPath, e.getMessage(), e);
-            // Attempt to delete the local temporary archive if it was created
+            log.error("Error during backup and S3 upload process for {}. Error: {}", backupRootDir, e.getMessage(), e);
             if (Files.exists(archivePath)) {
                 try {
                     Files.deleteIfExists(archivePath);
@@ -78,39 +84,44 @@ public class BackupService {
                     log.error("Failed to delete local temporary archive {} after an error.", archivePath, ex);
                 }
             }
-            // Do NOT delete dbSpecificBackupPath here, so it can be picked up by the next run.
             Thread.currentThread().interrupt();
         }
     }
 
     private void zipDirectory(Path sourceDir, Path zipFilePath) throws IOException {
+        if (!Files.exists(sourceDir) || !Files.isDirectory(sourceDir)) {
+            log.warn("Source directory for zipping does not exist or is not a directory: {}. Zip will be empty or not created.", sourceDir);
+            // Create an empty zip file as an indicator, or handle as error based on requirements
+            try (FileOutputStream fos = new FileOutputStream(zipFilePath.toFile());
+                 ZipOutputStream zos = new ZipOutputStream(fos)) {
+                // zos will be empty if sourceDir is not valid, as walk will not proceed.
+            }
+            return;
+        }
         try (FileOutputStream fos = new FileOutputStream(zipFilePath.toFile());
              ZipOutputStream zos = new ZipOutputStream(fos)) {
-
-            Files.walk(sourceDir)
-                .filter(path -> !Files.isDirectory(path)) // only zip files
-                .forEach(path -> {
-                    try {
-                        // Create relative path for zip entry to maintain folder structure within zip
-                        String entryName = sourceDir.relativize(path).toString().replace("\\", "/");
-                        if (entryName.isEmpty()) return; 
-
-                        ZipEntry zipEntry = new ZipEntry(entryName);
-                        zos.putNextEntry(zipEntry);
-                        Files.copy(path, zos);
+            Files.walkFileTree(sourceDir, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                    // Only add entry if it's not the source directory itself at the root level
+                    if (!dir.equals(sourceDir)) {
+                        String entryName = sourceDir.relativize(dir).toString().replace("\\", "/") + "/";
+                        zos.putNextEntry(new ZipEntry(entryName));
                         zos.closeEntry();
-                    } catch (IOException e) {
-                        log.error("Error while zipping path: {}", path, e);
-                        // Wrap and throw to be caught by the outer try-catch in createAndUploadBackup
-                        throw new RuntimeException("Error during zipping path: " + path, e);
                     }
-                });
-        } catch (RuntimeException e) {
-            // Unwrap the IOException if it was wrapped for the lambda
-            if (e.getCause() instanceof IOException iOException) {
-                throw iOException;
-            }
-            throw e; // Re-throw if it's another RuntimeException
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    String entryName = sourceDir.relativize(file).toString().replace("\\", "/");
+                    ZipEntry zipEntry = new ZipEntry(entryName);
+                    zos.putNextEntry(zipEntry);
+                    Files.copy(file, zos);
+                    zos.closeEntry();
+                    return FileVisitResult.CONTINUE;
+                }
+            });
         }
     }
 
@@ -127,7 +138,6 @@ public class BackupService {
         }
 
         Process process = processBuilder.start();
-        
         String stdOutput = new String(process.getInputStream().readAllBytes());
         String stdError = new String(process.getErrorStream().readAllBytes());
         int exitCode = process.waitFor();
@@ -158,8 +168,8 @@ public class BackupService {
                         });
                     log.info("Successfully deleted directory and its contents: {}", path);
                 } else { 
-                     Files.delete(path);
-                     log.info("Successfully deleted file: {}", path);
+                     Files.delete(path); // Should not happen if we are deleting a directory, but as a fallback
+                     log.info("Successfully deleted file (expected directory but found file): {}", path);
                 }
             } catch (IOException e) {
                 log.error("Error while trying to delete path: {}", path, e);
@@ -169,13 +179,22 @@ public class BackupService {
         }
     }
 
-    private boolean isDirEmpty(final Path directory) throws IOException {
+    private boolean isDirectoryEffectivelyEmptyForBackup(final Path directory) throws IOException {
         if (!Files.exists(directory) || !Files.isDirectory(directory)) {
-            // This case should ideally be caught by the check before calling isDirEmpty
             return true; 
         }
-        try (DirectoryStream<Path> dirStream = Files.newDirectoryStream(directory)) {
-            return !dirStream.iterator().hasNext();
+        boolean foundManagedContent = false;
+        for (String subdirName : MANAGED_BACKUP_SUBDIRS) {
+            Path managedSubdirPath = directory.resolve(subdirName);
+            if (Files.exists(managedSubdirPath) && Files.isDirectory(managedSubdirPath)) {
+                try (DirectoryStream<Path> dirStream = Files.newDirectoryStream(managedSubdirPath)) {
+                    if (dirStream.iterator().hasNext()) {
+                        foundManagedContent = true; // Found a managed subdir that is not empty
+                        break;
+                    }
+                }
+            }
         }
+        return !foundManagedContent;
     }
 } 
