@@ -3,8 +3,10 @@ package itmo.rshd.controller;
 import itmo.rshd.model.GeoLocation;
 import itmo.rshd.model.Region;
 import itmo.rshd.model.Region.RegionType;
+import itmo.rshd.model.User;
 import itmo.rshd.service.RegionService;
 import itmo.rshd.service.WebSocketService;
+import itmo.rshd.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,11 +21,13 @@ public class RegionController {
 
     private final RegionService regionService;
     private final WebSocketService webSocketService;
+    private final UserService userService;
 
     @Autowired
-    public RegionController(RegionService regionService, WebSocketService webSocketService) {
+    public RegionController(RegionService regionService, WebSocketService webSocketService, UserService userService) {
         this.regionService = regionService;
         this.webSocketService = webSocketService;
+        this.userService = userService;
     }
 
     @PostMapping
@@ -51,10 +55,10 @@ public class RegionController {
         if (existingRegion.isPresent()) {
             region.setId(id);
             Region updatedRegion = regionService.updateRegion(region);
-            
+
             // Notify all subscribers about region update
             webSocketService.notifyRegionStatusUpdate(updatedRegion);
-            
+
             return new ResponseEntity<>(updatedRegion, HttpStatus.OK);
         } else {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -88,7 +92,7 @@ public class RegionController {
     public ResponseEntity<List<Region>> getRegionsContainingPoint(
             @RequestParam double latitude,
             @RequestParam double longitude) {
-        
+
         GeoLocation location = new GeoLocation(latitude, longitude);
         List<Region> regions = regionService.findRegionsContainingPoint(location);
         return new ResponseEntity<>(regions, HttpStatus.OK);
@@ -97,7 +101,7 @@ public class RegionController {
     @GetMapping("/low-rated")
     public ResponseEntity<List<Region>> getLowRatedRegionsWithoutImportantPersons(
             @RequestParam double threshold) {
-        
+
         List<Region> regions = regionService.findLowRatedRegionsWithoutImportantPersons(threshold);
         return new ResponseEntity<>(regions, HttpStatus.OK);
     }
@@ -105,11 +109,11 @@ public class RegionController {
     @PutMapping("/{id}/statistics")
     public ResponseEntity<Region> updateRegionStatistics(@PathVariable String id) {
         Region updatedRegion = regionService.updateRegionStatistics(id);
-        
+
         if (updatedRegion != null) {
             // Notify all subscribers about region update
             webSocketService.notifyRegionStatusUpdate(updatedRegion);
-            
+
             return new ResponseEntity<>(updatedRegion, HttpStatus.OK);
         } else {
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
@@ -119,13 +123,13 @@ public class RegionController {
     @PutMapping("/statistics/all")
     public ResponseEntity<Void> updateAllRegionsStatistics() {
         regionService.updateAllRegionsStatistics();
-        
+
         // Get all regions and notify about their updates
         List<Region> regions = regionService.getAllRegions();
         for (Region region : regions) {
             webSocketService.notifyRegionStatusUpdate(region);
         }
-        
+
         return new ResponseEntity<>(HttpStatus.OK);
     }
 
@@ -134,4 +138,13 @@ public class RegionController {
         List<Region> regions = regionService.findRegionsUnderThreat(type);
         return new ResponseEntity<>(regions, HttpStatus.OK);
     }
-} 
+
+    @GetMapping("/{id}/eliminated-users")
+    public ResponseEntity<List<User>> getEliminatedUsersInRegion(@PathVariable String id) {
+        List<User> eliminatedUsers = userService.getEliminatedUsersInRegion(id);
+        if (eliminatedUsers != null) {
+            return new ResponseEntity<>(eliminatedUsers, HttpStatus.OK);
+        }
+        return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+    }
+}

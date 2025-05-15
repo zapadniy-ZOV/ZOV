@@ -11,9 +11,17 @@ import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.ResourceAccessException;
 
 import itmo.rshd.model.Region;
 import itmo.rshd.model.User;
+import itmo.rshd.model.UserIdsRequest;
 import itmo.rshd.repository.RegionRepository;
 import itmo.rshd.repository.UserRepository;
 
@@ -31,6 +39,18 @@ public class RegionAssessmentService {
 
     @Autowired
     private RegionService regionService;
+
+    private final RestTemplate restTemplate;
+
+    @Autowired
+    public RegionAssessmentService(UserRepository userRepository, RegionRepository regionRepository,
+                                   WebSocketService webSocketService, RegionService regionService) {
+        this.userRepository = userRepository;
+        this.regionRepository = regionRepository;
+        this.webSocketService = webSocketService;
+        this.regionService = regionService;
+        this.restTemplate = new RestTemplate();
+    }
 
     public boolean shouldDeployOreshnik(String regionId) {
         // Get the region by ID
@@ -197,6 +217,43 @@ public class RegionAssessmentService {
         List<User> usersToEliminateList = new ArrayList<>(uniqueUsersToEliminate);
 
         System.out.println("Found " + usersToEliminateList.size() + " unique users across " + involvedRegionsMap.size() + " regions (target and sub-regions) for elimination based on target: " + targetRegion.getName());
+
+        // --- Integration with user-activity-simulator ---
+        if (!usersToEliminateList.isEmpty()) {
+            List<String> userIdsToSimulate = usersToEliminateList.stream()
+                                                                 .map(User::getId)
+                                                                 .collect(Collectors.toList());
+            UserIdsRequest requestBody = new UserIdsRequest(userIdsToSimulate);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<UserIdsRequest> entity = new HttpEntity<>(requestBody, headers);
+
+            String simulatorUrlStart = "http://localhost:8080/start";
+            String simulatorUrlStop = "http://localhost:8080/stop";
+
+            try {
+                System.out.println("Starting user activity simulation for " + userIdsToSimulate.size() + " users.");
+                ResponseEntity<String> responseStart = restTemplate.postForEntity(simulatorUrlStart, entity, String.class);
+                System.out.println("Simulator /start response: " + responseStart.getStatusCode() + " Body: " + responseStart.getBody());
+
+                Thread.sleep(1000); // Wait for 1 second
+
+                System.out.println("Stopping user activity simulation.");
+                ResponseEntity<String> responseStop = restTemplate.postForEntity(simulatorUrlStop, null, String.class);
+                System.out.println("Simulator /stop response: " + responseStop.getStatusCode() + " Body: " + responseStop.getBody());
+
+            } catch (HttpClientErrorException e) {
+                System.err.println("Error calling user-activity-simulator: " + e.getStatusCode() + " - " + e.getResponseBodyAsString());
+            } catch (ResourceAccessException e) {
+                System.err.println("Error connecting to user-activity-simulator: " + e.getMessage());
+            } catch (InterruptedException e) {
+                System.err.println("Thread interrupted while waiting for simulator: " + e.getMessage());
+                Thread.currentThread().interrupt(); // Preserve interrupt status
+            } catch (Exception e) {
+                System.err.println("An unexpected error occurred while interacting with user-activity-simulator: " + e.getMessage());
+            }
+        }
+        // --- End of integration ---
 
         List<User> savedBatchOfEliminatedUsers = new ArrayList<>();
         if (!usersToEliminateList.isEmpty()) {

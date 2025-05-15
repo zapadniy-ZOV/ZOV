@@ -181,6 +181,19 @@ public class UserService {
         return userRepository.findUsersBelowRating(threshold);
     }
 
+    public List<User> getEliminatedUsersInRegion(String regionId) {
+        Optional<Region> regionOpt = regionService.getRegionById(regionId);
+        if (regionOpt.isPresent()) {
+            Region region = regionOpt.get();
+            if (region.getUsers() != null) {
+                return region.getUsers().stream()
+                        .filter(user -> !user.isActive()) // Users marked inactive by Oreshnik
+                        .collect(java.util.stream.Collectors.toList());
+            }
+        }
+        return Collections.emptyList();
+    }
+
     /**
      * Update user's social rating based on their rating of another user
      * 
