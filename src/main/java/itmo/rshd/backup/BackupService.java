@@ -1,13 +1,11 @@
 package itmo.rshd.backup;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import lombok.extern.slf4j.Slf4j;
-
-import java.io.File;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.*;
@@ -28,9 +26,15 @@ public class BackupService {
     private String bucketName;
 
     private static final String BACKUP_ROOT_DIR_PATH_STR = "./backup";
-    // Define the subdirectories we expect to manage within ./backup
-    private static final List<String> MANAGED_BACKUP_SUBDIRS = Arrays.asList("ZOV", "user_movement_db", "frostdb_data");
-    private static final Path TEMPORARY_ARCHIVE_PARENT_DIR = Paths.get("."); // Store .zip in project root temporarily
+    // Define ALL managed subdirectories within ./backup
+    private static final List<String> MANAGED_BACKUP_SUBDIRS = Arrays.asList(
+        "ZOV", 
+        "user_movement_db", 
+        "frostdb_data",
+        "janusgraph_export",         // Added for GraphML export
+        "janusgraph_cassandra_data"  // Added for Cassandra data copy
+    );
+    private static final Path TEMPORARY_ARCHIVE_PARENT_DIR = Paths.get(".");
 
     public void createAndUploadBackup() {
         Path backupRootDir = Paths.get(BACKUP_ROOT_DIR_PATH_STR);
@@ -65,13 +69,13 @@ public class BackupService {
             uploadToS3(archivePath.toString(), bucketName, archiveName);
             log.info("Successfully uploaded composite backup archive {} to S3 bucket {}", archiveName, bucketName);
 
-            // Cleanup after successful upload
             Files.deleteIfExists(archivePath);
             log.info("Successfully deleted local temporary archive: {}", archivePath);
 
             log.info("Deleting managed subdirectories from {} after successful upload.", backupRootDir);
             for (String subdirName : MANAGED_BACKUP_SUBDIRS) {
-                deleteDirectoryRecursively(backupRootDir.resolve(subdirName));
+                // Important: Resolve subdir against backupRootDir to get the correct path to delete.
+                deleteDirectoryRecursively(backupRootDir.resolve(subdirName)); 
             }
 
         } catch (IOException | InterruptedException e) {
@@ -91,10 +95,9 @@ public class BackupService {
     private void zipDirectory(Path sourceDir, Path zipFilePath) throws IOException {
         if (!Files.exists(sourceDir) || !Files.isDirectory(sourceDir)) {
             log.warn("Source directory for zipping does not exist or is not a directory: {}. Zip will be empty or not created.", sourceDir);
-            // Create an empty zip file as an indicator, or handle as error based on requirements
             try (FileOutputStream fos = new FileOutputStream(zipFilePath.toFile());
                  ZipOutputStream zos = new ZipOutputStream(fos)) {
-                // zos will be empty if sourceDir is not valid, as walk will not proceed.
+                // Creates an empty zip file
             }
             return;
         }
@@ -103,11 +106,12 @@ public class BackupService {
             Files.walkFileTree(sourceDir, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                    // Only add entry if it's not the source directory itself at the root level
-                    if (!dir.equals(sourceDir)) {
+                    if (!dir.equals(sourceDir)) { // Avoid adding the root dir itself as an entry if it's empty at top level
                         String entryName = sourceDir.relativize(dir).toString().replace("\\", "/") + "/";
-                        zos.putNextEntry(new ZipEntry(entryName));
-                        zos.closeEntry();
+                        if (!entryName.equals("/")) { // Ensure we don't add an empty root entry if sourceDir was like "."
+                             zos.putNextEntry(new ZipEntry(entryName));
+                             zos.closeEntry();
+                        }
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -138,19 +142,26 @@ public class BackupService {
         }
 
         Process process = processBuilder.start();
-        String stdOutput = new String(process.getInputStream().readAllBytes());
-        String stdError = new String(process.getErrorStream().readAllBytes());
+        // Simplified output reading as in JanusGraphBackupService for consistency, can be expanded if needed
+        StringBuilder stdOutput = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line; while ((line = reader.readLine()) != null) { stdOutput.append(line).append(System.lineSeparator()); }
+        }
+        StringBuilder stdError = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+            String line; while ((line = reader.readLine()) != null) { stdError.append(line).append(System.lineSeparator()); }
+        }
         int exitCode = process.waitFor();
+        String outputLog = stdOutput.toString().trim();
+        String errorLog = stdError.toString().trim();
+        if (!outputLog.isEmpty()) log.info("AWS S3 cp stdout: {}", outputLog);
 
         if (exitCode == 0) {
             log.info("File uploaded successfully to S3.");
-            if (!stdOutput.isEmpty()) log.info("AWS S3 cp stdout: {}", stdOutput);
-            if (!stdError.isEmpty()) log.warn("AWS S3 cp stderr (though exit code 0): {}", stdError);
+            if (!errorLog.isEmpty()) log.warn("AWS S3 cp stderr (though exit code 0): {}", errorLog);
         } else {
-            log.error("S3 upload failed with exit code {}. For command: '{}'", exitCode, command);
-            if (!stdOutput.isEmpty()) log.error("AWS S3 cp stdout: {}", stdOutput);
-            if (!stdError.isEmpty()) log.error("AWS S3 cp stderr: {}", stdError);
-            throw new IOException("S3 upload failed. Exit code: " + exitCode + ". Stderr: " + stdError + ". Stdout: " + stdOutput);
+            log.error("S3 upload failed with exit code {}. For command: '{}'. Stderr: {}", exitCode, command, errorLog);
+            throw new IOException("S3 upload failed. Exit code: " + exitCode + ". Stderr: " + errorLog);
         }
     }
 
@@ -158,21 +169,22 @@ public class BackupService {
          if (Files.exists(path)) {
             try {
                 if (Files.isDirectory(path)) {
-                    Files.walk(path)
-                        .sorted(Comparator.reverseOrder())
-                        .map(Path::toFile)
-                        .forEach(file -> {
-                            if (!file.delete()) {
-                                log.warn("Failed to delete file/directory: {}", file.getAbsolutePath());
-                            }
-                        });
+                     try (var walker = Files.walk(path)) {
+                        walker.sorted(Comparator.reverseOrder())
+                            .map(Path::toFile)
+                            .forEach(file -> {
+                                if (!file.delete()) {
+                                    log.warn("Failed to delete file/directory: {}", file.getAbsolutePath());
+                                }
+                            });
+                    }
                     log.info("Successfully deleted directory and its contents: {}", path);
                 } else { 
-                     Files.delete(path); // Should not happen if we are deleting a directory, but as a fallback
+                     Files.delete(path);
                      log.info("Successfully deleted file (expected directory but found file): {}", path);
                 }
             } catch (IOException e) {
-                log.error("Error while trying to delete path: {}", path, e);
+                log.error("Error while trying to delete path: {}. It might be locked or in use.", path, e);
             }
         } else {
             log.info("Path to delete does not exist, skipping deletion: {}", path);
@@ -189,11 +201,14 @@ public class BackupService {
             if (Files.exists(managedSubdirPath) && Files.isDirectory(managedSubdirPath)) {
                 try (DirectoryStream<Path> dirStream = Files.newDirectoryStream(managedSubdirPath)) {
                     if (dirStream.iterator().hasNext()) {
-                        foundManagedContent = true; // Found a managed subdir that is not empty
+                        foundManagedContent = true;
                         break;
                     }
                 }
             }
+        }
+        if (!foundManagedContent) {
+            log.info("Directory {} is considered effectively empty as no non-empty managed subdirectories were found.", directory);
         }
         return !foundManagedContent;
     }

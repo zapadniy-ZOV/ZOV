@@ -8,20 +8,21 @@ import org.springframework.stereotype.Component;
 public class ScheduledTasks {
 
     private final BackupService backupService;
-    private final MongoDumpService mongoDumpService;
+    private final LocalDataBackupPreparationService localDataBackupPreparationService;
 
     @Autowired
-    public ScheduledTasks(BackupService backupService, MongoDumpService mongoDumpService) {
+    public ScheduledTasks(BackupService backupService, LocalDataBackupPreparationService localDataBackupPreparationService) {
         this.backupService = backupService;
-        this.mongoDumpService = mongoDumpService;
+        this.localDataBackupPreparationService = localDataBackupPreparationService;
     }
+
     @Scheduled(cron = "0 1/2 * * * ?")
     public void scheduleS3UploadTask() {
         backupService.createAndUploadBackup(); 
     }
 
     @Scheduled(cron = "0 */2 * * * ?")
-    public void scheduleMongoDumpTask() {
-        mongoDumpService.performFullLocalBackupPreparation();
+    public void scheduleLocalDataPreparationTask() {
+        localDataBackupPreparationService.performFullLocalBackupPreparation();
     }
 } 
