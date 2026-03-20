@@ -4,6 +4,7 @@ import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV3;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -16,6 +17,7 @@ import java.util.Arrays;
 import static org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource.traversal;
 
 @Configuration
+@Slf4j
 public class JanusGraphConfig {
 
     private Cluster cluster;
@@ -48,15 +50,15 @@ public class JanusGraphConfig {
         try {
             if (g != null) {
                 g.close();
-                System.out.println("Graph traversal source closed properly.");
+                log.info("Graph traversal source closed properly");
             }
             
             if (cluster != null) {
                 cluster.close();
-                System.out.println("Gremlin cluster connection closed properly.");
+                log.info("Gremlin cluster connection closed properly");
             }
         } catch (Exception e) {
-            System.err.println("Error while closing JanusGraph connections: " + e.getMessage());
+            log.error("Error while closing JanusGraph connections", e);
             throw new IOException("Failed to close JanusGraph connections", e);
         }
     }

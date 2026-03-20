@@ -1,6 +1,7 @@
 package itmo.rshd.util;
 
 import itmo.rshd.service.RegionService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @Order(3) // Run after data generation
+@Slf4j
 public class StatisticsInitializer implements CommandLineRunner {
 
     private final RegionService regionService;
@@ -23,8 +25,8 @@ public class StatisticsInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        System.out.println("Initializing region statistics...");
+        log.info("Initializing region statistics");
         regionService.updateAllRegionsStatistics();
-        System.out.println("Region statistics initialization complete.");
+        log.info("Region statistics initialization complete");
     }
 } 

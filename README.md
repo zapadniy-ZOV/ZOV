@@ -1,9 +1,44 @@
 # ZOV
-Main app for personal pet-project
 
-## Run
+Основной backend проекта `ZOV`. Приложение реализовано как сервер на `Spring Boot` и отвечает за работу с пользователями, регионами, социальным рейтингом, websocket-уведомлениями и доменной логикой системы.
+
+## Что делает проект
+
+- предоставляет REST API для работы с пользователями, регионами и связанными сущностями;
+- хранит основные данные приложения в `MongoDB`;
+- использует `WebSocket` для отправки обновлений в реальном времени;
+- работает с графом цепочек поставок через `JanusGraph`;
+- содержит бизнес-логику для расчета состояния регионов и событий в системе;
+- запускается как центральный backend для взаимодействия с frontend и вспомогательными сервисами.
+
+## Технологии
+
+- `Java 17`
+- `Spring Boot 3`
+- `Spring Web`
+- `Spring WebSocket`
+- `Spring Security`
+- `Spring Validation`
+- `Spring Data MongoDB`
+- `MongoDB`
+- `JanusGraph`
+- `Gremlin Driver`
+- `Lombok`
+- `Maven`
+- `Docker Compose`
+
+## Запуск
+
+1. Поднять инфраструктурные сервисы:
 
 ```bash
 docker-compose up -d
-mvn clean sprint-boot:run
 ```
+
+2. Запустить backend:
+
+```bash
+mvn clean spring-boot:run
+```
+
+По умолчанию приложение запускается на порту `21341`.

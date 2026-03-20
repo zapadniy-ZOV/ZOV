@@ -4,6 +4,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSo
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
@@ -15,6 +16,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class MissileSupplyGraphService {
 
     private final GraphTraversalSource g;
@@ -205,11 +207,11 @@ public class MissileSupplyGraphService {
     
     public List<Map<String, Object>> getAllSupplyRoutes() {
         try {
-            System.out.println("Getting all supply routes...");
+            log.info("Getting all supply routes");
             
             // Try to count edges first
             long edgeCount = g.E().hasLabel("SupplyRoute").count().next();
-            System.out.println("Supply route edge count: " + edgeCount);
+            log.info("Supply route edge count: {}", edgeCount);
             
             // Use a different approach: get edges with their connected vertices
             List<Map<String, Object>> routes = new ArrayList<>();
@@ -221,9 +223,9 @@ public class MissileSupplyGraphService {
                 try {
                     Object depotId = depot.value("depotId");
                     depotMap.put(depotId, depot);
-                    System.out.println("Added depot to map: " + depotId + " - " + depot.id());
+                    log.debug("Added depot to map: {} - {}", depotId, depot.id());
                 } catch (Exception e) {
-                    System.err.println("Error getting depot ID: " + e.getMessage());
+                    log.warn("Error getting depot ID: {}", e.getMessage());
                 }
             }
             
@@ -237,7 +239,7 @@ public class MissileSupplyGraphService {
                             
                             if (!connectingEdges.isEmpty()) {
                                 Edge edge = connectingEdges.get(0);
-                                System.out.println("Found edge: " + edge.id() + " from " + source.value("name") + " to " + target.value("name"));
+                                log.debug("Found edge {} from {} to {}", edge.id(), source.value("name"), target.value("name"));
                                 
                                 // Create route map
                                 Map<String, Object> routeMap = new HashMap<>();
@@ -272,18 +274,17 @@ public class MissileSupplyGraphService {
                                 routes.add(routeMap);
                             }
                         } catch (Exception e) {
-                            System.err.println("Error checking edge between depots: " + e.getMessage());
+                            log.warn("Error checking edge between depots: {}", e.getMessage());
                         }
                     }
                 }
             }
             
-            System.out.println("Returning " + routes.size() + " routes");
+            log.info("Returning {} routes", routes.size());
             return routes;
             
         } catch (Exception e) {
-            System.err.println("Error getting supply routes: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error getting supply routes", e);
             return new ArrayList<>();
         }
     }
@@ -300,7 +301,7 @@ public class MissileSupplyGraphService {
                 return (T) value;
             }
         } catch (Exception e) {
-            System.out.println("Error getting property " + key + ": " + e.getMessage());
+            log.debug("Error getting property {}: {}", key, e.getMessage());
         }
         return defaultValue;
     }
@@ -349,7 +350,7 @@ public class MissileSupplyGraphService {
             
             return routeMap;
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Error updating route status from {} to {}", sourceDepotId, targetDepotId, e);
             return null;
         }
     }
@@ -367,7 +368,7 @@ public class MissileSupplyGraphService {
         g.V().hasLabel("SupplyDepot").drop().iterate();
         g.V().hasLabel("MissileType").drop().iterate();
         
-        System.out.println("Supply chain data has been cleared successfully");
+        log.info("Supply chain data has been cleared successfully");
     }
     
     /**
@@ -377,7 +378,7 @@ public class MissileSupplyGraphService {
      */
     public int generateSampleSupplyChain() {
         try {
-            System.out.println("Generating sample supply chain...");
+            log.info("Generating sample supply chain");
             
             // First clear any existing data
             clearSupplyChain();
@@ -473,7 +474,7 @@ public class MissileSupplyGraphService {
                 .property("securityLevel", "STANDARD")
                 .next();
             
-            System.out.println("Created all depots, now creating routes...");
+            log.info("Created all depots, now creating routes");
             
             // Connect hubs to each other
             addSupplyRouteWithProperties(moscowHub, spbHub, 700.0, 0.2);
@@ -498,7 +499,7 @@ public class MissileSupplyGraphService {
             addSupplyRouteWithProperties(moscowHub, podolsk, 50.0, 0.1);
             addSupplyRouteWithProperties(spbHub, pushkin, 30.0, 0.1);
             
-            System.out.println("Created all routes");
+            log.info("Created all routes");
             
             // Create missile types if they don't exist yet
             createMissileTypeIfNotExists("MT001", "Kinzhal", 2000.0, 100.0);
@@ -512,16 +513,15 @@ public class MissileSupplyGraphService {
                 addMissilesToDepot("HUB-002", "MT001", 80);
                 addMissilesToDepot("HUB-003", "MT003", 40);
             } catch (Exception e) {
-                System.err.println("Error adding missiles to depots: " + e.getMessage());
+                log.error("Error adding missiles to depots", e);
             }
             
-            System.out.println("Sample supply chain generated successfully!");
+            log.info("Sample supply chain generated successfully");
             
             // Return total count of depots
             return 8;
         } catch (Exception e) {
-            System.err.println("Error generating sample supply chain: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error generating sample supply chain", e);
             return 0;
         }
     }
@@ -534,14 +534,14 @@ public class MissileSupplyGraphService {
             }
             return addMissileType(id, name, range, effectRadius);
         } catch (Exception e) {
-            System.err.println("Error creating missile type: " + e.getMessage());
+            log.error("Error creating missile type {}", id, e);
             return null;
         }
     }
     
     private Edge addSupplyRouteWithProperties(Vertex source, Vertex target, double distance, double riskFactor) {
         try {
-            System.out.println("Creating route from " + source.value("name") + " to " + target.value("name"));
+            log.debug("Creating route from {} to {}", source.value("name"), target.value("name"));
             
             // Explicitly commit before adding the edge
             Edge edge = g.addE("SupplyRoute")
@@ -555,16 +555,15 @@ public class MissileSupplyGraphService {
                 .property("capacity", getCapacityByDistance(distance))
                 .next();
                 
-            System.out.println("Successfully created route: " + edge.id());
+            log.debug("Successfully created route {}", edge.id());
             
             // Verify the edge was created
             boolean exists = g.E(edge.id()).hasNext();
-            System.out.println("Edge exists after creation: " + exists);
+            log.debug("Edge exists after creation: {}", exists);
             
             return edge;
         } catch (Exception e) {
-            System.err.println("Error creating route from " + source.value("name") + " to " + target.value("name") + ": " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error creating route from {} to {}", source.value("name"), target.value("name"), e);
             return null;
         }
     }

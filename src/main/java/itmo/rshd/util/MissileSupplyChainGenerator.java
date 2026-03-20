@@ -2,6 +2,7 @@ package itmo.rshd.util;
 
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
@@ -14,6 +15,7 @@ import itmo.rshd.model.GeoLocation;
 import java.util.*;
 
 @Component
+@Slf4j
 public class MissileSupplyChainGenerator implements CommandLineRunner {
 
     private final GraphTraversalSource g;
@@ -30,11 +32,11 @@ public class MissileSupplyChainGenerator implements CommandLineRunner {
     public void run(String... args) throws Exception {
         // Check if supply chain already exists
         if (g.V().hasLabel("SupplyDepot").count().next() > 0) {
-            System.out.println("Supply chain already exists. Skipping generation.");
+            log.info("Supply chain already exists. Skipping generation");
             return;
         }
 
-        System.out.println("Generating missile supply chain...");
+        log.info("Generating missile supply chain");
         
         // Create main hubs in federal regions
         List<Region> federalRegions = regionRepository.findByType(Region.RegionType.REGION);
@@ -48,7 +50,7 @@ public class MissileSupplyChainGenerator implements CommandLineRunner {
         List<Region> districts = regionRepository.findByType(Region.RegionType.DISTRICT);
         createDistributionPoints(districts, cityDepots);
 
-        System.out.println("Supply chain generation completed!");
+        log.info("Supply chain generation completed");
     }
 
     private Map<String, Vertex> createRegionalHubs(List<Region> federalRegions) {
