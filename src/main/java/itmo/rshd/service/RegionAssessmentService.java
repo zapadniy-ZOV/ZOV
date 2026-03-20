@@ -24,8 +24,10 @@ import itmo.rshd.model.User;
 import itmo.rshd.model.UserIdsRequest;
 import itmo.rshd.repository.RegionRepository;
 import itmo.rshd.repository.UserRepository;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
+@Slf4j
 public class RegionAssessmentService {
 
     @Autowired
@@ -99,12 +101,19 @@ public class RegionAssessmentService {
         if (children != null) {
             for (Region child : children) {
                 recursivelyUpdateStatsOfChildren(child); // Go to deepest children first
-                System.out.println("Updating stats for child region: " + child.getName() + " (ID: " + child.getId() + ") before parent " + parentRegion.getName());
+                log.info(
+                        "Updating stats for child region {} (ID: {}) before parent {}",
+                        child.getName(),
+                        child.getId(),
+                        parentRegion.getName());
                 Region updatedChild = regionService.updateRegionStatistics(child.getId());
                 if (updatedChild != null) {
                     webSocketService.notifyRegionStatusUpdate(updatedChild);
                 } else {
-                     System.err.println("Failed to update stats for child region: " + child.getId() + " during recursive update of children for " + parentRegion.getId());
+                    log.error(
+                            "Failed to update stats for child region {} during recursive update for parent {}",
+                            child.getId(),
+                            parentRegion.getId());
                 }
             }
         }
@@ -113,42 +122,44 @@ public class RegionAssessmentService {
     public boolean deployOreshnik(String regionId) {
         Optional<Region> regionOpt = regionRepository.findById(regionId);
         if (!regionOpt.isPresent()) {
-            System.err.println("ORESHNIK DEPLOYMENT FAILED: Region not found: " + regionId);
+            log.error("ORESHNIK deployment failed: region not found {}", regionId);
             return false;
         }
         Region region = regionOpt.get();
 
         if (shouldDeployOreshnik(regionId)) {
-            System.out.println("ORESHNIK deployment authorized for region: " + region.getName() + " (ID: " + regionId + ")");
+            log.info("ORESHNIK deployment authorized for region {} (ID: {})", region.getName(), regionId);
 
             eliminateUsersInRegion(regionId); // This now updates users in DB AND embedded lists in ALL affected regions.
             
-            System.out.println("Starting recursive stats update for children of target region: " + region.getName());
+            log.info("Starting recursive stats update for children of target region {}", region.getName());
             recursivelyUpdateStatsOfChildren(region);
-            System.out.println("Finished recursive stats update for children of target region: " + region.getName());
+            log.info("Finished recursive stats update for children of target region {}", region.getName());
 
             // Now update the target region itself, it will use the freshly updated stats of its children
             Region updatedRegionAfterEliminationAndChildUpdates = regionService.updateRegionStatistics(regionId);
 
             if (updatedRegionAfterEliminationAndChildUpdates != null) {
-                System.out.println("Region " + updatedRegionAfterEliminationAndChildUpdates.getName() +
-                                   " statistics updated after Oreshnik and child updates. Population: " + updatedRegionAfterEliminationAndChildUpdates.getPopulationCount() +
-                                   ", AvgRating: " + updatedRegionAfterEliminationAndChildUpdates.getAverageSocialRating());
+                log.info(
+                        "Region {} statistics updated after Oreshnik and child updates. Population: {}, AvgRating: {}",
+                        updatedRegionAfterEliminationAndChildUpdates.getName(),
+                        updatedRegionAfterEliminationAndChildUpdates.getPopulationCount(),
+                        updatedRegionAfterEliminationAndChildUpdates.getAverageSocialRating());
                 webSocketService.notifyRegionStatusUpdate(updatedRegionAfterEliminationAndChildUpdates);
 
                 String parentId = updatedRegionAfterEliminationAndChildUpdates.getParentRegionId();
                 if (parentId != null && !parentId.isEmpty() && !parentId.equals("none")) {
-                    System.out.println("Triggering statistics update for parent region hierarchy: " + parentId);
+                    log.info("Triggering statistics update for parent region hierarchy {}", parentId);
                     // This existing method handles recursive updates *upwards* from the target region's parent
                     updateParentStatsRecursively(parentId); 
                 }
                 return true;
             } else {
-                System.err.println("CRITICAL: Failed to update statistics for target region: " + regionId + " after elimination and child updates.");
+                log.error("Failed to update statistics for target region {} after elimination and child updates", regionId);
                 return false; 
             }
         } else {
-            System.out.println("ORESHNIK deployment not authorized for region: " + region.getName() + " (ID: " + regionId + ")");
+            log.info("ORESHNIK deployment not authorized for region {} (ID: {})", region.getName(), regionId);
             return false;
         }
     }
@@ -158,14 +169,14 @@ public class RegionAssessmentService {
         if (regionIdToUpdate == null || regionIdToUpdate.isEmpty() || regionIdToUpdate.equals("none")) {
             return;
         }
-        System.out.println("Recursively updating stats for ancestor: " + regionIdToUpdate);
+        log.info("Recursively updating stats for ancestor {}", regionIdToUpdate);
         Region updatedRegion = regionService.updateRegionStatistics(regionIdToUpdate);
         if (updatedRegion != null) {
             webSocketService.notifyRegionStatusUpdate(updatedRegion); 
             String parentId = updatedRegion.getParentRegionId();
             updateParentStatsRecursively(parentId); 
         } else {
-            System.err.println("Failed to update stats for parent region: " + regionIdToUpdate + " during recursive ancestor update.");
+            log.error("Failed to update stats for parent region {} during recursive ancestor update", regionIdToUpdate);
         }
     }
 
@@ -204,7 +215,7 @@ public class RegionAssessmentService {
     private void eliminateUsersInRegion(String targetRegionId) {
         Region targetRegion = regionRepository.findById(targetRegionId).orElse(null);
         if (targetRegion == null) {
-            System.out.println("Warning: Target region not found for elimination: " + targetRegionId);
+            log.warn("Target region not found for elimination {}", targetRegionId);
             return;
         }
 
@@ -216,7 +227,11 @@ public class RegionAssessmentService {
         
         List<User> usersToEliminateList = new ArrayList<>(uniqueUsersToEliminate);
 
-        System.out.println("Found " + usersToEliminateList.size() + " unique users across " + involvedRegionsMap.size() + " regions (target and sub-regions) for elimination based on target: " + targetRegion.getName());
+        log.info(
+                "Found {} unique users across {} regions for elimination based on target {}",
+                usersToEliminateList.size(),
+                involvedRegionsMap.size(),
+                targetRegion.getName());
 
         // --- Integration with user-activity-simulator ---
         if (!usersToEliminateList.isEmpty()) {
@@ -232,25 +247,28 @@ public class RegionAssessmentService {
             String simulatorUrlStop = "http://localhost:8080/stop";
 
             try {
-                System.out.println("Starting user activity simulation for " + userIdsToSimulate.size() + " users.");
+                log.info("Starting user activity simulation for {} users", userIdsToSimulate.size());
                 ResponseEntity<String> responseStart = restTemplate.postForEntity(simulatorUrlStart, entity, String.class);
-                System.out.println("Simulator /start response: " + responseStart.getStatusCode() + " Body: " + responseStart.getBody());
+                log.info("Simulator /start response: status={}, body={}", responseStart.getStatusCode(), responseStart.getBody());
 
                 Thread.sleep(1000); // Wait for 1 second
 
-                System.out.println("Stopping user activity simulation.");
+                log.info("Stopping user activity simulation");
                 ResponseEntity<String> responseStop = restTemplate.postForEntity(simulatorUrlStop, null, String.class);
-                System.out.println("Simulator /stop response: " + responseStop.getStatusCode() + " Body: " + responseStop.getBody());
+                log.info("Simulator /stop response: status={}, body={}", responseStop.getStatusCode(), responseStop.getBody());
 
             } catch (HttpClientErrorException e) {
-                System.err.println("Error calling user-activity-simulator: " + e.getStatusCode() + " - " + e.getResponseBodyAsString());
+                log.error(
+                        "Error calling user-activity-simulator: status={}, body={}",
+                        e.getStatusCode(),
+                        e.getResponseBodyAsString());
             } catch (ResourceAccessException e) {
-                System.err.println("Error connecting to user-activity-simulator: " + e.getMessage());
+                log.error("Error connecting to user-activity-simulator: {}", e.getMessage());
             } catch (InterruptedException e) {
-                System.err.println("Thread interrupted while waiting for simulator: " + e.getMessage());
+                log.error("Thread interrupted while waiting for simulator: {}", e.getMessage());
                 Thread.currentThread().interrupt(); // Preserve interrupt status
             } catch (Exception e) {
-                System.err.println("An unexpected error occurred while interacting with user-activity-simulator: " + e.getMessage());
+                log.error("Unexpected error while interacting with user-activity-simulator", e);
             }
         }
         // --- End of integration ---
@@ -263,9 +281,9 @@ public class RegionAssessmentService {
                 // Collect for batch save or save individually - assuming save returns the managed entity
                 savedBatchOfEliminatedUsers.add(userRepository.save(user)); 
             }
-            System.out.println("Completed UserRepository update for " + savedBatchOfEliminatedUsers.size() + " users.");
+            log.info("Completed UserRepository update for {} users", savedBatchOfEliminatedUsers.size());
         } else {
-            System.out.println("No users found to eliminate for target region: " + targetRegion.getName());
+            log.info("No users found to eliminate for target region {}", targetRegion.getName());
             // Still proceed to update regions in case their lists need cleaning, though unlikely if no users.
         }
         
@@ -275,7 +293,7 @@ public class RegionAssessmentService {
                                                 .collect(Collectors.toMap(User::getId, u -> u));
 
         // Update embedded user lists in ALL involved regions
-        System.out.println("Updating embedded user lists for all " + involvedRegionsMap.size() + " involved regions...");
+        log.info("Updating embedded user lists for {} involved regions", involvedRegionsMap.size());
         for (Region affectedRegion : involvedRegionsMap.values()) {
             List<User> currentEmbeddedUsers = affectedRegion.getUsers(); // Get original list
             List<User> newEmbeddedUserList = new ArrayList<>();
@@ -305,8 +323,12 @@ public class RegionAssessmentService {
 
             affectedRegion.setUsers(correctlyUpdatedEmbeddedList); // Use the more robustly built list
             regionRepository.save(affectedRegion);
-            System.out.println("Saved region " + affectedRegion.getName() + " (ID: " + affectedRegion.getId() + ") with updated embedded user list (" + correctlyUpdatedEmbeddedList.size() + " users).");
+            log.info(
+                    "Saved region {} (ID: {}) with updated embedded user list ({} users)",
+                    affectedRegion.getName(),
+                    affectedRegion.getId(),
+                    correctlyUpdatedEmbeddedList.size());
         }
-        System.out.println("Finished updating embedded user lists for all involved regions.");
+        log.info("Finished updating embedded user lists for all involved regions");
     }
 }

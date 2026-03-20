@@ -6,6 +6,7 @@ import itmo.rshd.model.Region;
 import itmo.rshd.model.User;
 import itmo.rshd.repository.RegionRepository;
 import itmo.rshd.repository.UserRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
@@ -21,6 +22,7 @@ import java.util.stream.Collectors;
  * Run this once to initialize your database with sample data.
  */
 @Component
+@Slf4j
 public class DataGenerator implements CommandLineRunner {
 
     private final UserRepository userRepository;
@@ -45,11 +47,11 @@ public class DataGenerator implements CommandLineRunner {
     public void run(String... args) throws Exception {
         // Check if data already exists
         if (userRepository.count() > 0 || regionRepository.count() > 0) {
-            System.out.println("Database already populated. Skipping data generation.");
+            log.info("Database already populated. Skipping data generation");
             return;
         }
 
-        System.out.println("Starting data generation...");
+        log.info("Starting data generation");
 
         // Create the country
         Region russia = createCountry();
@@ -69,7 +71,7 @@ public class DataGenerator implements CommandLineRunner {
         // Update region statistics
         updateRegionStatistics(districts, cities, federalRegions, russia);
 
-        System.out.println("Data generation completed!");
+        log.info("Data generation completed");
     }
 
     private Region createCountry() {
@@ -335,15 +337,15 @@ public class DataGenerator implements CommandLineRunner {
             usersToPersistInRepo.add(user);
 
             if ((i + 1) % 1000 == 0) {
-                System.out.println("Prepared " + (usersToPersistInRepo.size()) + " users for persistence so far...");
+                log.info("Prepared {} users for persistence so far", usersToPersistInRepo.size());
             }
         }
 
-        System.out.println("Saving all " + usersToPersistInRepo.size() + " users to UserRepository...");
+        log.info("Saving {} users to UserRepository", usersToPersistInRepo.size());
         List<User> savedUsersWithIds = userRepository.saveAll(usersToPersistInRepo);
-        System.out.println("All users saved to UserRepository and have IDs.");
+        log.info("All users saved to UserRepository and have IDs");
 
-        System.out.println("Adding saved users to their respective region's embedded lists...");
+        log.info("Adding saved users to their respective region embedded lists");
         for (User savedUser : savedUsersWithIds) {
             Region targetEmbeddingRegion = null;
             // Determine the most specific region for embedding this user
@@ -361,17 +363,21 @@ public class DataGenerator implements CommandLineRunner {
                 if (targetEmbeddingRegion.getUsers() == null) { targetEmbeddingRegion.setUsers(new ArrayList<>()); }
                 targetEmbeddingRegion.getUsers().add(savedUser);
             } else {
-                System.out.println("Warning: Could not determine target region for embedding user: " + savedUser.getUsername() + " with districtId: " + savedUser.getDistrictId() + " regionId: " + savedUser.getRegionId());
+                log.warn(
+                        "Could not determine target region for embedding user {} with districtId {} and regionId {}",
+                        savedUser.getUsername(),
+                        savedUser.getDistrictId(),
+                        savedUser.getRegionId());
             }
         }
-        System.out.println("Users added to embedded lists. Saving all regions...");
+        log.info("Users added to embedded lists. Saving all regions");
 
         // Save all regions that could have users embedded
         regionRepository.save(country); 
         regionRepository.saveAll(federalRegions);
         regionRepository.saveAll(cities);
         regionRepository.saveAll(districts);
-        System.out.println("All regions potentially containing embedded users have been saved.");
+        log.info("All regions potentially containing embedded users have been saved");
     }
 
     private User createSpecialUser(Region country, Region federalRegion, Region city,
@@ -438,7 +444,7 @@ public class DataGenerator implements CommandLineRunner {
 
     private void updateRegionStatistics(List<Region> districts, List<Region> cities,
             List<Region> federalRegions, Region country) {
-        System.out.println("Updating region statistics...");
+        log.info("Updating region statistics");
 
         // Update district statistics
         for (Region district : districts) {
@@ -464,7 +470,7 @@ public class DataGenerator implements CommandLineRunner {
         regionRepository.saveAll(federalRegions);
         regionRepository.save(country);
 
-        System.out.println("Region statistics updated.");
+        log.info("Region statistics updated");
     }
 
     private void updateDistrictStatistics(Region district) {
@@ -629,8 +635,12 @@ public class DataGenerator implements CommandLineRunner {
 
         // Log if coordinates were adjusted
         if (validLat != latitude || validLon != longitude) {
-            System.out.println("Warning: Adjusted invalid coordinates from (" +
-                    latitude + ", " + longitude + ") to (" + validLat + ", " + validLon + ")");
+            log.warn(
+                    "Adjusted invalid coordinates from ({}, {}) to ({}, {})",
+                    latitude,
+                    longitude,
+                    validLat,
+                    validLon);
         }
 
         return new GeoLocation(validLat, validLon);

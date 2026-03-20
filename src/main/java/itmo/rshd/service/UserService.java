@@ -5,6 +5,7 @@ import itmo.rshd.model.User;
 import itmo.rshd.model.User.SocialStatus;
 import itmo.rshd.repository.UserRepository;
 import itmo.rshd.model.Region;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Service
+@Slf4j
 public class UserService {
 
     private final UserRepository userRepository;
@@ -224,11 +226,11 @@ public class UserService {
 
             double newTargetRating = target.getSocialRating() + impact;
             newTargetRating = Math.max(0, Math.min(100, newTargetRating));
-            System.out.println("New target rating: " + newTargetRating);
-            System.out.println("Impact: " + impact);
-            System.out.println("Status multiplier: " + statusMultiplier);
-            System.out.println("Rating ratio multiplier: " + ratingRatioMultiplier);
-            System.out.println("Overall multiplier: " + overallMultiplier);
+            log.debug("Calculated new target rating: {}", newTargetRating);
+            log.debug("Impact: {}", impact);
+            log.debug("Status multiplier: {}", statusMultiplier);
+            log.debug("Rating ratio multiplier: {}", ratingRatioMultiplier);
+            log.debug("Overall multiplier: {}", overallMultiplier);
             target.setSocialRating(newTargetRating);
             updateUserStatusBasedOnRating(target);
             User updatedTarget = userRepository.save(target);
