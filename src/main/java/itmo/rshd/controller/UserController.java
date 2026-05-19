@@ -117,8 +117,9 @@ public class UserController {
         }
     }
 
-    @PutMapping("/{id}/social-rating")
-    public ResponseEntity<User> updateSocialRating(
+    @Deprecated
+    @PutMapping("/deprecated/{id}/social-rating")
+    public ResponseEntity<User> updateSocialRatingDeprecated(
             @PathVariable String id,
             @RequestParam("rating") double ratingValue,
             @RequestParam(required = false) String raterId) {

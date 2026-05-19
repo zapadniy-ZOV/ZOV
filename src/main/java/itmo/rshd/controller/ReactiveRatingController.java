@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 
 @RestController
-@RequestMapping("/api/reactive")
+@RequestMapping("/api")
 public class ReactiveRatingController {
     private final ReactiveSocialRatingService reactiveSocialRatingService;
     private final ReactiveRegionRepository reactiveRegionRepository;
