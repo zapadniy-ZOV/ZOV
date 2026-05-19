@@ -169,14 +169,12 @@ public class UserService {
     }
 
     public List<User> findUsersNearLocation(GeoLocation location, double maxDistanceKm) {
-        // Convert km to meters for MongoDB query
-        double maxDistanceMeters = maxDistanceKm * 1000;
-
-        // Use the new geospatial query method
-        return userRepository.findByCurrentLocationNear(
-                location.getLatitude(),
+        // $centerSphere radius is in radians: km / Earth's radius (6371 km)
+        double radiusRadians = maxDistanceKm / 6371.0;
+        return userRepository.findUsersWithinRadius(
                 location.getLongitude(),
-                maxDistanceMeters);
+                location.getLatitude(),
+                radiusRadians);
     }
 
     public List<User> findUsersBelowRating(double threshold) {
