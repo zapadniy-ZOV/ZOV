@@ -6,6 +6,7 @@
 
 - предоставляет REST API для работы с пользователями, регионами и связанными сущностями;
 - хранит основные данные приложения в `MongoDB`;
+- обрабатывает лайк/дизлайк и пересчет среднего социального рейтинга регионов в реактивном контуре (`WebFlux + Reactive MongoDB`);
 - использует `WebSocket` для отправки обновлений в реальном времени;
 - работает с графом цепочек поставок через `JanusGraph`;
 - содержит бизнес-логику для расчета состояния регионов и событий в системе;
@@ -16,10 +17,12 @@
 - `Java 17`
 - `Spring Boot 3`
 - `Spring Web`
+- `Spring WebFlux`
 - `Spring WebSocket`
 - `Spring Security`
 - `Spring Validation`
 - `Spring Data MongoDB`
+- `Spring Data Reactive MongoDB`
 - `MongoDB`
 - `JanusGraph`
 - `Gremlin Driver`
@@ -35,10 +38,19 @@
 docker-compose up -d
 ```
 
-2. Запустить backend:
+1. Запустить backend:
 
 ```bash
 mvn clean spring-boot:run
 ```
 
 По умолчанию приложение запускается на порту `21341`.
+
+## Локальные креды (docker-compose)
+
+- `MongoDB`: `zov_mongo_user / zov_mongo_pass`, БД `zov`, порт `27017`
+
+## Реактивные endpoint'ы для social rating
+
+- `PUT /api/reactive/users/{id}/social-rating?rating=<value>&raterId=<optional>`
+- `GET /api/reactive/regions/{id}/average-social-rating`

@@ -1,5 +1,18 @@
 version: '3'
 services:
+  mongo:
+    image: mongo:7
+    container_name: zov-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: zov_mongo_user
+      MONGO_INITDB_ROOT_PASSWORD: zov_mongo_pass
+      MONGO_INITDB_DATABASE: zov
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
   janusgraph:
     image: janusgraph/janusgraph:latest
     container_name: janusgraph
@@ -40,3 +53,6 @@ services:
       - "9200:9200"       # REST API
       - "9300:9300"       # Inter-node communication
     restart: always 
+
+volumes:
+  mongo_data:
