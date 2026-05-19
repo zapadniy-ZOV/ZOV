@@ -68,7 +68,7 @@ public class RegionAssessmentService {
         }
         
         return region.getAverageSocialRating() < 39
-                && region.getImportantPersonsCount() / region.getPopulationCount() < 0.02;
+                && (double) region.getImportantPersonsCount() / region.getPopulationCount() < 0.02;
     }
 
     public boolean shouldDeployOreshnikByCalculation(String regionId) {
