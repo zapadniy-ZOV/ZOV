@@ -98,7 +98,7 @@ public class UserController {
             webSocketService.notifyUserLocationUpdate(updatedUser);
 
             // Find nearby users and notify this user
-            List<User> nearbyUsers = userService.findUsersNearLocation(location, 50.0);
+            List<User> nearbyUsers = userService.findUsersNearLocation(location, 50);
             webSocketService.notifyNearbyUsersUpdate(id, nearbyUsers);
 
             // Also notify nearby users about this user
@@ -117,8 +117,9 @@ public class UserController {
         }
     }
 
-    @PutMapping("/{id}/social-rating")
-    public ResponseEntity<User> updateSocialRating(
+    @Deprecated
+    @PutMapping("/deprecated/{id}/social-rating")
+    public ResponseEntity<User> updateSocialRatingDeprecated(
             @PathVariable String id,
             @RequestParam("rating") double ratingValue,
             @RequestParam(required = false) String raterId) {

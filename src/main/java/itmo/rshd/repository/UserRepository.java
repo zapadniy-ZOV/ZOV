@@ -30,13 +30,9 @@ public interface UserRepository extends MongoRepository<User, String> {
     
     List<User> findByStatus(SocialStatus status);
     
-    // Using MongoDB's $geoNear operator for geospatial queries
-    @Query("{'currentLocation.position': {$near: {$geometry: {type: 'Point', coordinates: [?1, ?0]}, $maxDistance: ?2}}, 'active': true}")
-    List<User> findByCurrentLocationNear(double latitude, double longitude, double maxDistance);
-    
-    // For compatibility with existing service methods
-    @Query("{'currentLocation.position': {$near: {$geometry: {type: 'Point', coordinates: [?0, ?1]}, $maxDistance: ?2}}, 'active': true}")
-    List<User> findUsersNearLocation(double longitude, double latitude, double maxDistanceMeters);
+    // $centerSphere: [[lon, lat], radiusInRadians] — works without sort index requirement
+    @Query("{'currentLocation.position': {$geoWithin: {$centerSphere: [[?0, ?1], ?2]}}, 'active': true}")
+    List<User> findUsersWithinRadius(double longitude, double latitude, double radiusRadians);
     
     @Query("{'regionId': ?0, 'status': {$in: ['IMPORTANT', 'VIP']}, 'active': true}")
     List<User> findImportantPersonsInRegion(String regionId);
