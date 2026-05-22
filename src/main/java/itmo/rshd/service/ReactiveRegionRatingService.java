@@ -1,19 +1,17 @@
 package itmo.rshd.service;
 
-import itmo.rshd.model.Region.RegionType;
-import itmo.rshd.model.User.SocialStatus;
 import itmo.rshd.model.Region;
+import itmo.rshd.model.Region.RegionType;
 import itmo.rshd.model.User;
+import itmo.rshd.model.User.SocialStatus;
 import itmo.rshd.repository.reactive.ReactiveRegionRepository;
 import itmo.rshd.repository.reactive.ReactiveUserRepository;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
-import java.util.Collections;
-import java.util.List;
-
 @Service
 public class ReactiveRegionRatingService {
+
     private final ReactiveRegionRepository reactiveRegionRepository;
     private final ReactiveUserRepository reactiveUserRepository;
 
@@ -25,51 +23,27 @@ public class ReactiveRegionRatingService {
 
     public Mono<Region> updateRegionStatistics(String regionId) {
         return reactiveRegionRepository.findById(regionId)
-                .flatMap(region -> Mono.zip(
-                        reactiveUserRepository.findByDistrictIdAndActiveTrue(regionId).collectList(),
-                        region.getType() == RegionType.DISTRICT
-                                ? Mono.just(Collections.<Region>emptyList())
-                                : reactiveRegionRepository.findByParentRegionId(regionId).collectList())
-                        .flatMap(tuple -> {
-                            List<User> directUsers = tuple.getT1();
-                            List<Region> subRegions = tuple.getT2();
+                .flatMap(region -> {
+                    Mono<Stats> directStats = reactiveUserRepository
+                            .findByDistrictIdAndActiveTrue(regionId)
+                            .reduce(Stats.empty(), Stats::withUser);
 
-                            int populationFromDirectUsers = 0;
-                            double ratingSumFromDirectUsers = 0;
-                            int importantFromDirectUsers = 0;
+                    Mono<Stats> subStats = region.getType() == RegionType.DISTRICT
+                            ? Mono.just(Stats.empty())
+                            : reactiveRegionRepository.findByParentRegionId(regionId)
+                                    .reduce(Stats.empty(), Stats::withSubRegion);
 
-                            for (User user : directUsers) {
-                                populationFromDirectUsers++;
-                                ratingSumFromDirectUsers += user.getSocialRating();
-                                if (user.getStatus() == SocialStatus.IMPORTANT || user.getStatus() == SocialStatus.VIP) {
-                                    importantFromDirectUsers++;
-                                }
-                            }
-
-                            int totalPopulation = populationFromDirectUsers;
-                            double totalWeightedRatingSum = ratingSumFromDirectUsers;
-                            int totalImportantPersons = importantFromDirectUsers;
-
-                            for (Region subRegion : subRegions) {
-                                totalPopulation += subRegion.getPopulationCount();
-                                totalWeightedRatingSum += subRegion.getAverageSocialRating()
-                                        * subRegion.getPopulationCount();
-                                totalImportantPersons += subRegion.getImportantPersonsCount();
-                            }
-
-                            region.setPopulationCount(totalPopulation);
-                            if (totalPopulation > 0) {
-                                region.setAverageSocialRating(totalWeightedRatingSum / totalPopulation);
-                                region.setImportantPersonsCount(totalImportantPersons);
+                    return Mono.zip(directStats, subStats, Stats::merge)
+                            .flatMap(total -> {
+                                region.setPopulationCount(total.population());
+                                region.setAverageSocialRating(total.population() > 0
+                                        ? total.ratingSum() / total.population()
+                                        : 0);
+                                region.setImportantPersonsCount(total.importantCount());
                                 region.setUnderThreat(false);
-                            } else {
-                                region.setAverageSocialRating(0);
-                                region.setImportantPersonsCount(0);
-                                region.setUnderThreat(false);
-                            }
-
-                            return reactiveRegionRepository.save(region);
-                        }));
+                                return reactiveRegionRepository.save(region);
+                            });
+                });
     }
 
     public Mono<Void> updateUserRelatedRegionStatistics(User user) {
@@ -82,16 +56,12 @@ public class ReactiveRegionRatingService {
                         if (!isAssigned(district.getParentRegionId())) {
                             return Mono.<Void>empty();
                         }
-
                         String cityId = district.getParentRegionId();
                         return updateRegionStatistics(cityId)
                                 .then(reactiveRegionRepository.findById(cityId))
-                                .flatMap(city -> {
-                                    if (!isAssigned(city.getParentRegionId())) {
-                                        return Mono.<Void>empty();
-                                    }
-                                    return updateRegionStatistics(city.getParentRegionId()).then();
-                                });
+                                .flatMap(city -> isAssigned(city.getParentRegionId())
+                                        ? updateRegionStatistics(city.getParentRegionId()).then()
+                                        : Mono.<Void>empty());
                     })
                     .then();
         } else if (isAssigned(user.getRegionId())) {
@@ -100,7 +70,7 @@ public class ReactiveRegionRatingService {
                     .then(reactiveRegionRepository.findById(regionId))
                     .flatMap(region -> isAssigned(region.getParentRegionId())
                             ? updateRegionStatistics(region.getParentRegionId()).then()
-                            : Mono.empty())
+                            : Mono.<Void>empty())
                     .then();
         } else {
             hierarchyUpdate = Mono.empty();
@@ -115,5 +85,29 @@ public class ReactiveRegionRatingService {
 
     private boolean isAssigned(String regionId) {
         return regionId != null && !regionId.isBlank() && !"none".equalsIgnoreCase(regionId);
+    }
+
+    private record Stats(int population, double ratingSum, int importantCount) {
+
+        static Stats empty() {
+            return new Stats(0, 0.0, 0);
+        }
+
+        Stats withUser(User u) {
+            boolean important = u.getStatus() == SocialStatus.IMPORTANT || u.getStatus() == SocialStatus.VIP;
+            return new Stats(population + 1, ratingSum + u.getSocialRating(), importantCount + (important ? 1 : 0));
+        }
+
+        Stats withSubRegion(Region r) {
+            return new Stats(
+                    population + r.getPopulationCount(),
+                    ratingSum + r.getAverageSocialRating() * r.getPopulationCount(),
+                    importantCount + r.getImportantPersonsCount());
+        }
+
+        static Stats merge(Stats a, Stats b) {
+            return new Stats(a.population + b.population, a.ratingSum + b.ratingSum,
+                    a.importantCount + b.importantCount);
+        }
     }
 }
